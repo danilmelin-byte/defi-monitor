@@ -117,71 +117,66 @@ if btn and wallet:
             val_usd = (a0 * p_eth + a1) if not is_inv else (a0 + a1 * p_eth)
             fee_usd = (f0 * p_eth + f1) if not is_inv else (f0 + f1 * p_eth)
 
-            # Аналитика
             days = max((date.today() - start_date).days, 1)
             fee_daily = fee_usd / days
             roi_pct = ((val_usd + fee_usd - initial_inv) / initial_inv * 100) if initial_inv > 0 else 0
             in_range = pos[5] <= cur_tick <= pos[6]
             p_pos = max(0, min(100, (cur_tick - pos[5]) / (pos[6] - pos[5]) * 100))
 
-            # Rebalance Logic
             rb_min, rb_max = p_now * 0.90, p_now * 1.10
             
-            # Сборка HTML
-            html_content = f"""
-<div class="metric-card">
-    <div style="display: flex; justify-content: space-between; align-items: start; margin-bottom: 20px;">
-        <div>
-            <h2 style="margin:0; color: #2dd4bf;">{s0} / {s1}</h2>
-            <code style="color: rgba(255,255,255,0.3); font-size: 0.7rem;">ID: #{tid}</code>
-        </div>
-        <div style="text-align: right;">
-            <div style="font-size: 0.7rem; opacity: 0.5;">TOTAL ROI</div>
-            <div style="font-size: 1.3rem; font-weight: 800; color: {'#4ade80' if roi_pct >= 0 else '#f87171'};">{roi_pct:+.2f}%</div>
-        </div>
-    </div>
-
-    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-bottom: 20px;">
-        <div class="stat-box">
-            <div style="font-size: 0.7rem; opacity: 0.5; margin-bottom: 5px;">LIQUIDITY</div>
-            <div style="font-size: 1.2rem; font-weight: 700;">${val_usd:,.2f}</div>
-        </div>
-        <div class="stat-box">
-            <div style="font-size: 0.7rem; opacity: 0.5; margin-bottom: 5px;">FEES ACCRUED</div>
-            <div style="font-size: 1.2rem; font-weight: 700; color: #4ade80;">+${fee_usd:,.2f}</div>
-        </div>
-    </div>
-
-    <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; margin-bottom: 25px;">
-        <div class="crystal-column"><div class="crystal-label">24H Fees</div><div class="crystal-value">${fee_daily:,.2f}</div></div>
-        <div class="crystal-column"><div class="crystal-label">7D Est.</div><div class="crystal-value">${fee_daily*7:,.2f}</div></div>
-        <div class="crystal-column"><div class="crystal-label">30D Est.</div><div class="crystal-value">${fee_daily*30:,.2f}</div></div>
-    </div>
-
-    <div class="range-bar-bg">
-        <div class="range-fill" style="width: 100%;"></div>
-        <div class="price-pointer" style="left: {p_pos}%;"></div>
-    </div>
-    
-    <div style="display: flex; justify-content: space-between; font-size: 0.75rem; opacity: 0.8; margin-bottom: 15px;">
-        <span>MIN: {p_min:,.1f}</span>
-        <span style="color: #fbbf24; font-weight: bold;">PRICE: {p_now:,.1f}</span>
-        <span>MAX: {p_max:,.1f}</span>
-    </div>
-
-    {f'''<div class="warning-box">
-        <div style="color: #f87171; font-weight: 700; font-size: 0.8rem; margin-bottom: 5px;">⚠️ ACTION REQUIRED: REBALANCE</div>
-        <div style="display: flex; justify-content: space-between; font-size: 0.85rem;">
-            <span>Suggested Range (±10%):</span>
-            <span style="font-weight: 800;">{rb_min:,.1f} — {rb_max:,.1f}</span>
-        </div>
-    </div>''' if not in_range else f'''
-    <div style="background: rgba(45, 212, 191, 0.05); border: 1px solid rgba(45, 212, 191, 0.1); padding: 10px; border-radius: 12px; display: flex; justify-content: space-between; align-items: center;">
-        <span style="font-size: 0.75rem; opacity: 0.6;">Auto-Rebalance Plan (±10%):</span>
-        <span style="font-size: 0.8rem; font-weight: 600; color: #2dd4bf;">{rb_min:,.1f} — {rb_max:,.1f}</span>
-    </div>'''}
+            # --- ФОРМИРОВАНИЕ ВЫВОДА (БЕЗ ОТСТУПОВ СЛЕВА) ---
+            if not in_range:
+                warning_html = f"""<div class="warning-box">
+<div style="color: #f87171; font-weight: 700; font-size: 0.8rem; margin-bottom: 5px;">⚠️ ACTION REQUIRED: REBALANCE</div>
+<div style="display: flex; justify-content: space-between; font-size: 0.85rem;">
+<span>Suggested Range (±10%):</span>
+<span style="font-weight: 800;">{rb_min:,.1f} — {rb_max:,.1f}</span>
 </div>
-"""
+</div>"""
+            else:
+                warning_html = f"""<div style="background: rgba(45, 212, 191, 0.05); border: 1px solid rgba(45, 212, 191, 0.1); padding: 10px; border-radius: 12px; display: flex; justify-content: space-between; align-items: center;">
+<span style="font-size: 0.75rem; opacity: 0.6;">Auto-Rebalance Plan (±10%):</span>
+<span style="font-size: 0.8rem; font-weight: 600; color: #2dd4bf;">{rb_min:,.1f} — {rb_max:,.1f}</span>
+</div>"""
+
+            html_content = f"""<div class="metric-card">
+<div style="display: flex; justify-content: space-between; align-items: start; margin-bottom: 20px;">
+<div>
+<h2 style="margin:0; color: #2dd4bf;">{s0} / {s1}</h2>
+<code style="color: rgba(255,255,255,0.3); font-size: 0.7rem;">ID: #{tid}</code>
+</div>
+<div style="text-align: right;">
+<div style="font-size: 0.7rem; opacity: 0.5;">TOTAL ROI</div>
+<div style="font-size: 1.3rem; font-weight: 800; color: {'#4ade80' if roi_pct >= 0 else '#f87171'};">{roi_pct:+.2f}%</div>
+</div>
+</div>
+<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-bottom: 20px;">
+<div class="stat-box">
+<div style="font-size: 0.7rem; opacity: 0.5; margin-bottom: 5px;">LIQUIDITY</div>
+<div style="font-size: 1.2rem; font-weight: 700;">${val_usd:,.2f}</div>
+</div>
+<div class="stat-box">
+<div style="font-size: 0.7rem; opacity: 0.5; margin-bottom: 5px;">FEES ACCRUED</div>
+<div style="font-size: 1.2rem; font-weight: 700; color: #4ade80;">+${fee_usd:,.2f}</div>
+</div>
+</div>
+<div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; margin-bottom: 25px;">
+<div class="crystal-column"><div class="crystal-label">24H Fees</div><div class="crystal-value">${fee_daily:,.2f}</div></div>
+<div class="crystal-column"><div class="crystal-label">7D Est.</div><div class="crystal-value">${fee_daily*7:,.2f}</div></div>
+<div class="crystal-column"><div class="crystal-label">30D Est.</div><div class="crystal-value">${fee_daily*30:,.2f}</div></div>
+</div>
+<div class="range-bar-bg">
+<div class="range-fill" style="width: 100%;"></div>
+<div class="price-pointer" style="left: {p_pos}%;"></div>
+</div>
+<div style="display: flex; justify-content: space-between; font-size: 0.75rem; opacity: 0.8; margin-bottom: 15px;">
+<span>MIN: {p_min:,.1f}</span>
+<span style="color: #fbbf24; font-weight: bold;">PRICE: {p_now:,.1f}</span>
+<span>MAX: {p_max:,.1f}</span>
+</div>
+{warning_html}
+</div>"""
             st.markdown(html_content, unsafe_allow_html=True)
 
     except Exception as e:
