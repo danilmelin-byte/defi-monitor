@@ -1,44 +1,29 @@
 import streamlit as st
 from web3 import Web3
 import requests
+import math
 
 # --- 1. НАСТРОЙКИ СТРАНИЦЫ ---
-st.set_page_config(page_title="Architect DeFi Monitor", layout="wide")
+st.set_page_config(page_title="Architect DeFi Pro", layout="wide")
 
-# CSS стили (встраиваем напрямую)
 st.markdown("""
 <style>
     .metric-card {
-        background-color: #ffffff;
-        padding: 20px;
-        border-radius: 15px;
-        border: 1px solid #eee;
-        box-shadow: 0 4px 10px rgba(0,0,0,0.05);
-        margin-bottom: 20px;
-        color: #111;
+        background-color: #ffffff; padding: 20px; border-radius: 15px;
+        border: 1px solid #eee; box-shadow: 0 4px 10px rgba(0,0,0,0.05);
+        margin-bottom: 20px; color: #111;
     }
     .range-bar-bg {
-        background-color: #eee;
-        height: 12px;
-        border-radius: 6px;
-        position: relative;
-        margin: 20px 0;
+        background-color: #eee; height: 12px; border-radius: 6px;
+        position: relative; margin: 20px 0;
     }
     .range-fill {
-        background-color: #4caf50;
-        height: 100%;
-        border-radius: 6px;
-        opacity: 0.2;
-        width: 100%;
+        background-color: #4caf50; height: 100%; border-radius: 6px;
+        opacity: 0.2; width: 100%;
     }
     .price-pointer {
-        position: absolute;
-        top: -6px;
-        width: 4px;
-        height: 24px;
-        background-color: #2196f3;
-        border-radius: 2px;
-        box-shadow: 0 0 5px rgba(33,150,243,0.5);
+        position: absolute; top: -6px; width: 4px; height: 24px;
+        background-color: #2196f3; border-radius: 2px;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -59,7 +44,11 @@ ABI = [
     {"inputs":[],"name":"slot0","outputs":[{"name":"sqrtPriceX96","type":"uint160"},{"name":"tick","type":"int24"}],"type":"function"}
 ]
 
-# --- 3. ЛОГИКА ---
+# --- 3. МАТЕМАТИКА ---
+def tick_to_price(tick, dec0, dec1):
+    """Преобразует тик Uniswap в человеческую цену"""
+    return (1.0001 ** tick) / (10 ** (dec1 - dec0))
+
 def get_amounts(liquidity, current_tick, tick_lower, tick_upper, dec0, dec1):
     if liquidity == 0: return 0.0, 0.0
     sqrt_p = 1.0001 ** (current_tick / 2)
@@ -86,7 +75,7 @@ def get_prices():
 # --- 4. ИНТЕРФЕЙС ---
 st.sidebar.header("Настройки")
 wallet = st.sidebar.text_input("Кошелек", "0x995907fe97C9CAd3D310c4F384453E8676F4a170")
-btn = st.sidebar.button("🔎 Начать сканирование")
+btn = st.sidebar.button("🔎 Обновить данные")
 
 if btn and wallet:
     try:
@@ -96,62 +85,62 @@ if btn and wallet:
         eth_p, usdc_p = get_prices()
         
         count = manager.functions.balanceOf(addr).call()
-        st.subheader(f"Найдено позиций: {count}")
         
         for i in range(count):
             tid = manager.functions.tokenOfOwnerByIndex(addr, i).call()
             p = manager.functions.positions(tid).call()
-            if p[7] == 0: continue
+            if p[7] == 0: continue # Пропуск закрытых
             
-            # Токены
-            c0 = w3.eth.contract(address=p[2], abi=ABI)
-            c1 = w3.eth.contract(address=p[3], abi=ABI)
+            c0, c1 = w3.eth.contract(address=p[2], abi=ABI), w3.eth.contract(address=p[3], abi=ABI)
             s0, d0 = c0.functions.symbol().call(), c0.functions.decimals().call()
             s1, d1 = c1.functions.symbol().call(), c1.functions.decimals().call()
             
-            # Пул
             pool_addr = factory.functions.getPool(p[2], p[3], p[4]).call()
             curr_tick = w3.eth.contract(address=pool_addr, abi=ABI).functions.slot0().call()[1]
             
-            # Расчеты
+            # ЦЕНЫ ВМЕСТО ТИКОВ
+            price_min = 1 / tick_to_price(p[6], d0, d1) if s1 == "USDC" else tick_to_price(p[5], d0, d1)
+            price_max = 1 / tick_to_price(p[5], d0, d1) if s1 == "USDC" else tick_to_price(p[6], d0, d1)
+            price_now = 1 / tick_to_price(curr_tick, d0, d1) if s1 == "USDC" else tick_to_price(curr_tick, d0, d1)
+            
+            # Балансы и комиссии
             amt0, amt1 = get_amounts(p[7], curr_tick, p[5], p[6], d0, d1)
-            f0, f1 = p[10]/(10**d0), p[11]/(10**d1)
+            f0, f1 = p[10]/(10**d0), p[11]/(10**d1) # Комиссии из контракта
+            
             total_usd = (amt0 * eth_p) + (amt1 * usdc_p)
             fees_usd = (f0 * eth_p) + (f1 * usdc_p)
             
-            # Позиция бегунка
-            price_pos = max(0, min(100, (curr_tick - p[5]) / (p[6] - p[5]) * 100))
+            # Позиция бегунка (инвертируем для пар с USDC, чтобы было привычнее)
+            price_pos = (curr_tick - p[5]) / (p[6] - p[5]) * 100
+            price_pos = max(0, min(100, price_pos))
             in_range = p[5] <= curr_tick <= p[6]
 
-            # ВЫВОД КАРТОЧКИ (Markdown + HTML)
             st.markdown(f"""
             <div class="metric-card">
-                <div style="display: flex; justify-content: space-between; align-items: center;">
+                <div style="display: flex; justify-content: space-between;">
                     <h3 style="margin:0;">NFT #{tid}: {s0}/{s1}</h3>
-                    <span style="background:{'#e8f5e9' if in_range else '#ffebee'}; color:{'#2e7d32' if in_range else '#c62828'}; padding:5px 10px; border-radius:10px; font-weight:bold;">
+                    <span style="color:{'#2e7d32' if in_range else '#c62828'}; font-weight:bold;">
                         {'● В ДИАПАЗОНЕ' if in_range else '● ВНЕ ДИАПАЗОНА'}
                     </span>
                 </div>
                 <div style="margin:15px 0; display:flex; justify-content:space-between;">
                     <div>
-                        <div style="color:#666; font-size:0.8em;">Стоимость:</div>
-                        <div style="font-size:1.3em; font-weight:bold;">${total_usd:.2f}</div>
-                        <div style="font-size:0.8em; color:#888;">{amt0:.4f} {s0} + {amt1:.2f} {s1}</div>
+                        <div style="color:#666; font-size:0.8em;">Депозит:</div>
+                        <div style="font-size:1.2em; font-weight:bold;">${total_usd:.2f}</div>
                     </div>
                     <div style="text-align:right;">
-                        <div style="color:#666; font-size:0.8em;">Комиссии:</div>
-                        <div style="font-size:1.3em; font-weight:bold; color:#2e7d32;">+ ${fees_usd:.4f}</div>
-                        <div style="font-size:0.8em; color:#888;">{f0:.5f} {s0} + {f1:.2f} {s1}</div>
+                        <div style="color:#2e7d32; font-size:0.8em; font-weight:bold;">Накопленные комиссии:</div>
+                        <div style="font-size:1.2em; font-weight:bold; color:#2e7d32;">+ ${fees_usd:.4f}</div>
                     </div>
                 </div>
                 <div class="range-bar-bg">
                     <div class="range-fill"></div>
                     <div class="price-pointer" style="left: {price_pos}%;"></div>
                 </div>
-                <div style="display:flex; justify-content:space-between; font-size:0.7em; color:#999; font-family:monospace;">
-                    <span>MIN: {p[5]}</span>
-                    <span style="color:#2196f3; font-weight:bold;">ТЕКУЩИЙ: {curr_tick}</span>
-                    <span>MAX: {p[6]}</span>
+                <div style="display:flex; justify-content:space-between; font-size:0.8em; color:#666;">
+                    <span>Мин: <b>{price_min:.1f}</b></span>
+                    <span style="color:#2196f3;">Цена: <b>{price_now:.1f}</b></span>
+                    <span>Макс: <b>{price_max:.1f}</b></span>
                 </div>
             </div>
             """, unsafe_allow_html=True)
