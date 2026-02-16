@@ -45,7 +45,7 @@ ABI = [
 
 # --- 3. МАТЕМАТИКА ---
 def tick_to_price(tick, d0, d1):
-    # Цена = 1.0001^tick * 10^(d0-d1)
+    # Формула Uniswap V3: Цена = 1.0001^tick
     return (1.0001 ** tick) * (10 ** (d0 - d1))
 
 def get_amounts(liquidity, cur_tick, tick_low, tick_high, d0, d1):
@@ -64,7 +64,7 @@ def get_amounts(liquidity, cur_tick, tick_low, tick_high, d0, d1):
         a1 = liquidity * (sqrtB - sqrtA)
     return a0 / (10**d0), a1 / (10**d1)
 
-# --- 4. ОСНОВНОЙ ЦИКЛ ---
+# --- 4. ИНТЕРФЕЙС ---
 st.sidebar.header("Параметры")
 wallet = st.sidebar.text_input("Кошелек", "0x995907fe97C9CAd3D310c4F384453E8676F4a170")
 btn = st.sidebar.button("🔎 Обновить данные")
@@ -75,55 +75,66 @@ if btn and wallet:
         nft_contract = w3.eth.contract(address=NFT_MANAGER, abi=ABI)
         factory = w3.eth.contract(address=FACTORY_ADDR, abi=ABI)
         
-        # Запрос актуальных цен ETH/USDC для общей оценки
-        p_eth = requests.get("https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=usd").json()['ethereum']['usd']
+        # Безопасный запрос цены ETH
+        try:
+            r = requests.get("https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=usd", timeout=5).json()
+            p_eth = r['ethereum']['usd']
+        except:
+            p_eth = 2750.0 # Фолбэк, если API лежит
         
         count = nft_contract.functions.balanceOf(addr).call()
-        st.subheader(f"Найдено NFT: {count}")
+        st.subheader(f"Найдено позиций: {count}")
 
         for i in range(count):
             tid = nft_contract.functions.tokenOfOwnerByIndex(addr, i).call()
             pos = nft_contract.functions.positions(tid).call()
-            if pos[7] == 0: continue # Пропуск пустых
+            if pos[7] == 0: continue
             
-            # Данные токенов
-            t0_c = w3.eth.contract(address=pos[2], abi=ABI)
-            t1_c = w3.eth.contract(address=pos[3], abi=ABI)
-            s0, d0 = t0_c.functions.symbol().call(), t0_c.functions.decimals().call()
-            s1, d1 = t1_c.functions.symbol().call(), t1_c.functions.decimals().call()
+            s0, d0 = w3.eth.contract(address=pos[2], abi=ABI).functions.symbol().call(), w3.eth.contract(address=pos[2], abi=ABI).functions.decimals().call()
+            s1, d1 = w3.eth.contract(address=pos[3], abi=ABI).functions.symbol().call(), w3.eth.contract(address=pos[3], abi=ABI).functions.decimals().call()
             
-            # Пул и текущий тик
             pool_addr = factory.functions.getPool(pos[2], pos[3], pos[4]).call()
-            pool_contract = w3.eth.contract(address=pool_addr, abi=ABI)
-            cur_tick = pool_contract.functions.slot0().call()[1]
+            cur_tick = w3.eth.contract(address=pool_addr, abi=ABI).functions.slot0().call()[1]
             
-            # РАСЧЕТ ЦЕН (WETH/USDC)
-            # В Uniswap V3 цена считается как Token1/Token0
-            price_min = tick_to_price(pos[5], d0, d1)
-            price_max = tick_to_price(pos[6], d0, d1)
-            price_now = tick_to_price(cur_tick, d0, d1)
+            # --- ЛОГИКА ИНВЕРСИИ ДЛЯ ПАР С USDC ---
+            # В паре WETH/USDC (токен0/токен1), цена обычно USDC за WETH.
+            # Если USDC - это token0, формулу нужно перевернуть.
+            is_inverted = (s0 == "USDC" or s0 == "USDT")
             
-            # Балансы в токенах
+            p_min_raw = tick_to_price(pos[5], d0, d1)
+            p_max_raw = tick_to_price(pos[6], d0, d1)
+            p_now_raw = tick_to_price(cur_tick, d0, d1)
+
+            if is_inverted:
+                p_min, p_max, p_now = 1/p_max_raw, 1/p_min_raw, 1/p_now_raw
+            else:
+                p_min, p_max, p_now = p_min_raw, p_max_raw, p_now_raw
+            
+            # Балансы
             a0, a1 = get_amounts(pos[7], cur_tick, pos[5], pos[6], d0, d1)
             
-            # КОМИССИИ (Tokens Owed + накопленные за последнее время)
-            # Если tokensOwed по нулям, выводим 0, но предупреждаем
+            # Комиссии (Tokens Owed)
             f0, f1 = pos[10] / (10**d0), pos[11] / (10**d1)
             
-            total_usd = (a0 * p_eth) + (a1 * 1.0) # Для WETH/USDC
-            fees_usd = (f0 * p_eth) + (f1 * 1.0)
+            # Оценка стоимости (упрощенно для WETH/USDC)
+            if s1 in ["USDC", "USDT"]:
+                total_usd = (a0 * p_eth) + a1
+                fees_usd = (f0 * p_eth) + f1
+            else:
+                total_usd = (a0 * p_eth) + (a1 * p_eth) # На случай пар ETH/ETH
+                fees_usd = (f0 * p_eth) + (f1 * p_eth)
             
-            # Позиция бегунка
-            price_range = pos[6] - pos[5]
-            price_pos = ((cur_tick - pos[5]) / price_range) * 100
-            price_pos = max(0, min(100, price_pos))
+            # Визуализация шкалы
+            p_range = pos[6] - pos[5]
+            p_pos = ((cur_tick - pos[5]) / p_range * 100) if p_range != 0 else 50
+            p_pos = max(0, min(100, p_pos))
             in_range = pos[5] <= cur_tick <= pos[6]
 
             st.markdown(f"""
             <div class="metric-card">
                 <div style="display: flex; justify-content: space-between; align-items: center;">
                     <h3 style="margin:0;">NFT #{tid}: {s0}/{s1}</h3>
-                    <span style="color:{'#2e7d32' if in_range else '#c62828'}; font-weight:bold;">
+                    <span style="color:{'#2e7d32' if in_range else '#c62828'}; font-weight:bold; font-size:0.9em;">
                         {'● В ДИАПАЗОНЕ' if in_range else '● ВНЕ ДИАПАЗОНА'}
                     </span>
                 </div>
@@ -134,19 +145,19 @@ if btn and wallet:
                         <div style="font-size:0.85em; color:#444;">{a0:.4f} {s0} + {a1:.2f} {s1}</div>
                     </div>
                     <div style="text-align:right;">
-                        <div style="color:#2e7d32; font-size:0.8em; font-weight:bold;">Накоплено комиссий:</div>
+                        <div style="color:#2e7d32; font-size:0.8em; font-weight:bold;">Комиссии (Uncollected):</div>
                         <div style="font-size:1.4em; font-weight:bold; color:#2e7d32;">+ ${fees_usd:.4f}</div>
-                        <div style="font-size:0.85em; color:#444;">{f0:.5f} {s0} + {f1:.2f} {s1}</div>
+                        <div style="font-size:0.85em; color:#444;">{f0:.5f} {s0} + {f1:.4f} {s1}</div>
                     </div>
                 </div>
                 <div class="range-bar-bg">
                     <div class="range-fill"></div>
-                    <div class="price-pointer" style="left: {price_pos}%;"></div>
+                    <div class="price-pointer" style="left: {p_pos}%;"></div>
                 </div>
                 <div style="display:flex; justify-content:space-between; font-size:0.9em; font-weight:500;">
-                    <span>Мин: <span style="color:#111;">{price_min:.1f}</span></span>
-                    <span style="color:#2196f3;">Цена сейчас: {price_now:.1f}</span>
-                    <span>Макс: <span style="color:#111;">{price_max:.1f}</span></span>
+                    <span>Мин: <span style="color:#111;">{p_min:.1f}</span></span>
+                    <span style="color:#2196f3;">Цена сейчас: {p_now:.1f}</span>
+                    <span>Макс: <span style="color:#111;">{p_max:.1f}</span></span>
                 </div>
             </div>
             """, unsafe_allow_html=True)
