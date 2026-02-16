@@ -76,7 +76,7 @@ def get_amounts(liquidity, cur_tick, tick_low, tick_high, d0, d1):
 
 # --- 4. ИНТЕРФЕЙС ---
 st.title("Architect DeFi Pro")
-wallet = st.sidebar.text_input("Кошелек", "0x995907fe97C9CAd3D310c4F384453E8676F4a170")
+wallet = st.sidebar.text_input("Кошелек", "")
 btn = st.sidebar.button("ОБНОВИТЬ ДАННЫЕ", type="primary")
 
 if btn and wallet:
@@ -109,7 +109,6 @@ if btn and wallet:
             cur_tick = pool_c.functions.slot0().call()[1]
 
             # --- СИМУЛЯЦИЯ COLLECT (ГЛАВНЫЙ ФИКС) ---
-            # Мы вызываем функцию collect БЕЗ транзакции, чтобы узнать результат
             MAX_UINT128 = 2**128 - 1
             collect_params = {
                 "tokenId": tid,
@@ -117,7 +116,6 @@ if btn and wallet:
                 "amount0Max": MAX_UINT128,
                 "amount1Max": MAX_UINT128
             }
-            # Используем .call() от имени владельца кошелька
             live_fees = nft_contract.functions.collect(collect_params).call({'from': target})
             f0 = live_fees[0] / (10**d0)
             f1 = live_fees[1] / (10**d1)
