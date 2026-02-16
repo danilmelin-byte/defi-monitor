@@ -81,7 +81,8 @@ def get_amounts(liquidity, current_tick, tick_lower, tick_upper, dec0, dec1):
 def multicall_batch(calls_info):
     if not calls_info: return []
     mc_contract = w3.eth.contract(address=MULTICALL_ADDR, abi=MULTICALL_ABI)
-    encoded = [{'target': c[0].address, 'callData': c[0].encodeABI(fn_name=c[1], args=c[2])} for c in calls_info]
+    # СТАЛО:
+encoded = [{'target': c[0].address, 'callData': c[0].functions[c[1]](*c[2]).encodeABI()} for c in calls_info]
     try:
         _, return_data = mc_contract.functions.aggregate(encoded).call()
         results = []
