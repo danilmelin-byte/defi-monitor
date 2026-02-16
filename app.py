@@ -33,8 +33,7 @@ COINGECKO_MAP = {
 MANAGER_ABI = [
     {"inputs":[{"internalType":"address","name":"owner","type":"address"}],"name":"balanceOf","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},
     {"inputs":[{"internalType":"address","name":"owner","type":"address"},{"internalType":"uint256","name":"index","type":"uint256"}],"name":"tokenOfOwnerByIndex","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},
-    {"inputs":[{"internalType":"uint256","name":"tokenId","type":"uint256"}],"name":"positions","outputs":[{"internalType":"uint96","name":"nonce","type":"uint96"},{"internalType":"address","name":"operator","type":"address"},{"internalType":"address","name":"token0","type":"address"},{"internalType":"address","name":"token1","type":"address"},{"internalType":"uint24","name":"fee","type":"uint24"},{"internalType":"int24","name":"tickLower","type":"int24"},{"internalType":"int24","name":"tickUpper","type":"int24"},{"internalType":"uint128","name":"liquidity","type":"uint128"},{"internalType":"uint256","name":"feeGrowthInside0LastX128","type":"uint256"},{"internalType":"uint256","name":"feeGrowthInside1LastX128","type":"uint256"},{"internalType":"uint128","name":"tokensOwed0","type":"uint128"},{"internalType":"uint128","name":"tokensOwed1","type":"uint128"}],"stateMutability":"view","type":"function"},
-    {"inputs":[{"components":[{"internalType":"uint256","name":"tokenId","type":"uint256"},{"internalType":"address","name":"recipient","type":"address"},{"internalType":"uint128","name":"amount0Max","type":"uint128"},{"internalType":"uint128","name":"amount1Max","type":"uint128"}],"internalType":"struct INonfungiblePositionManager.CollectParams","name":"params","type":"tuple"}],"name":"collect","outputs":[{"internalType":"uint256","name":"amount0","type":"uint256"},{"internalType":"uint256","name":"amount1","type":"uint256"}],"stateMutability":"payable","type":"function"}
+    {"inputs":[{"internalType":"uint256","name":"tokenId","type":"uint256"}],"name":"positions","outputs":[{"internalType":"uint96","name":"nonce","type":"uint96"},{"internalType":"address","name":"operator","type":"address"},{"internalType":"address","name":"token0","type":"address"},{"internalType":"address","name":"token1","type":"address"},{"internalType":"uint24","name":"fee","type":"uint24"},{"internalType":"int24","name":"tickLower","type":"int24"},{"internalType":"int24","name":"tickUpper","type":"int24"},{"internalType":"uint128","name":"liquidity","type":"uint128"},{"internalType":"uint256","name":"feeGrowthInside0LastX128","type":"uint256"},{"internalType":"uint256","name":"feeGrowthInside1LastX128","type":"uint256"},{"internalType":"uint128","name":"tokensOwed0","type":"uint128"},{"internalType":"uint128","name":"tokensOwed1","type":"uint128"}],"stateMutability":"view","type":"function"}
 ]
 ERC20_ABI = [
     {"inputs":[],"name":"symbol","outputs":[{"internalType":"string","name":"","type":"string"}],"stateMutability":"view","type":"function"},
@@ -81,8 +80,8 @@ def get_amounts(liquidity, current_tick, tick_lower, tick_upper, dec0, dec1):
 def multicall_batch(calls_info):
     if not calls_info: return []
     mc_contract = w3.eth.contract(address=MULTICALL_ADDR, abi=MULTICALL_ABI)
-    # СТАЛО:
-encoded = [{'target': c[0].address, 'callData': c[0].functions[c[1]](*c[2]).encodeABI()} for c in calls_info]
+    # Исправленный вызов encodeABI через объект functions
+    encoded = [{'target': c[0].address, 'callData': c[0].functions[c[1]](*c[2]).encodeABI()} for c in calls_info]
     try:
         _, return_data = mc_contract.functions.aggregate(encoded).call()
         results = []
@@ -95,7 +94,7 @@ encoded = [{'target': c[0].address, 'callData': c[0].functions[c[1]](*c[2]).enco
         st.error(f"Multicall error: {e}")
         return [None] * len(calls_info)
 
-# --- 5. САЙДБАР И АВТООБНОВЛЕНИЕ ---
+# --- 5. САЙДБАР ---
 with st.sidebar:
     st.header("⚙️ Settings")
     wallet_input = st.text_input("Wallet Address", value="0x995907fe97C9CAd3D310c4F384453E8676F4a170")
@@ -108,21 +107,21 @@ if (btn_scan or refresh_rate > 0) and wallet_input:
     manager = w3.eth.contract(address=NFT_MANAGER, abi=MANAGER_ABI)
     factory = w3.eth.contract(address=FACTORY_ADDR, abi=FACTORY_ABI)
     
-    with st.spinner("Batching blockchain data..."):
+    with st.spinner("Analyzing DeFi Positions..."):
         try:
             count = manager.functions.balanceOf(wallet).call()
             if count == 0:
                 st.warning("No active Uniswap V3 positions.")
             else:
-                # PHASE 1: Token IDs
+                # 1. Получаем ID токенов
                 ids_calls = [(manager, 'tokenOfOwnerByIndex', [wallet, i]) for i in range(count)]
                 token_ids = multicall_batch(ids_calls)
                 
-                # PHASE 2: Positions
+                # 2. Получаем данные позиций
                 pos_calls = [(manager, 'positions', [tid]) for tid in token_ids]
                 raw_pos = multicall_batch(pos_calls)
                 
-                # PHASE 3: Metadata & Pools
+                # 3. Собираем метаданные токенов и пулов
                 unique_tokens = list(set([p[2] for p in raw_pos] + [p[3] for p in raw_pos]))
                 meta_calls = []
                 for t in unique_tokens:
@@ -134,54 +133,40 @@ if (btn_scan or refresh_rate > 0) and wallet_input:
                 
                 meta_res = multicall_batch(meta_calls)
                 
-                # Parsing Metadata
+                # Парсинг ответов
                 sym_map = {unique_tokens[i]: meta_res[i*2] for i in range(len(unique_tokens))}
                 dec_map = {unique_tokens[i]: meta_res[i*2+1] for i in range(len(unique_tokens))}
                 pool_map = { (raw_pos[i][2], raw_pos[i][3], raw_pos[i][4]): meta_res[len(unique_tokens)*2 + i] for i in range(len(raw_pos))}
                 
-                # PHASE 4: Ticks
+                # 4. Получаем текущие тики в пулах
                 pool_addrs = list(set(pool_map.values()))
-                tick_calls = [(w3.eth.contract(address=a, abi=POOL_ABI), 'slot0', []) for a in pool_addrs if a != "0x0000..."]
+                tick_calls = [(w3.eth.contract(address=a, abi=POOL_ABI), 'slot0', []) for a in pool_addrs if a != "0x0000000000000000000000000000000000000000"]
                 tick_res = multicall_batch(tick_calls)
                 tick_map = {pool_addrs[i]: tick_res[i][1] for i in range(len(tick_res)) if tick_res[i]}
 
-                # --- SUMMARY & ALERTS ---
-                final_data = []
-                price_map = get_usd_prices(list(sym_map.values()))
-                
+                # Рендеринг алертов
                 st.subheader("🔔 Priority Alerts")
                 alert_count = 0
-                
                 for i, p in enumerate(raw_pos):
                     tid = token_ids[i]
                     pool = pool_map[(p[2], p[3], p[4])]
                     curr_tick = tick_map.get(pool, 0)
-                    s0, s1 = sym_map[p[2]], sym_map[p[3]]
-                    d0, d1 = dec_map[p[2]], dec_map[p[3]]
-                    
-                    amt0, amt1 = get_amounts(p[7], curr_tick, p[5], p[6], d0, d1)
-                    
-                    # Check Range
-                    in_range = p[5] <= curr_tick <= p[6]
-                    if p[7] > 0 and not in_range:
-                        st.markdown(f"<div class='alert-box alert-danger'>🚨 Position #{tid} ({s0}/{s1}) is OUT OF RANGE!</div>", unsafe_allow_html=True)
+                    if p[7] > 0 and not (p[5] <= curr_tick <= p[6]):
+                        st.markdown(f"<div class='alert-box alert-danger'>🚨 Position #{tid} ({sym_map[p[2]]}/{sym_map[p[3]]}) OUT OF RANGE!</div>", unsafe_allow_html=True)
                         alert_count += 1
                 
-                if alert_count == 0: st.info("✅ All positions are healthy and earning fees.")
+                if alert_count == 0: st.success("✅ All positions are healthy.")
 
-                # --- DASHBOARD RENDER ---
+                # Рендеринг карточек
                 st.divider()
-                cols = st.columns(len(raw_pos) if len(raw_pos) < 4 else 3)
+                cols = st.columns(3)
                 for i, p in enumerate(raw_pos):
                     with cols[i % 3]:
-                        st.markdown(f"**Position #{token_ids[i]}** ({sym_map[p[2]]}/{sym_map[p[3]]})")
-                        st.caption(f"Fee: {p[4]/10000}%")
-                        # (Additional UI details can be added here)
+                        st.markdown(f"<div class='metric-card'><b>Pos #{token_ids[i]}</b><br>{sym_map[p[2]]}/{sym_map[p[3]]}<br>Fee: {p[4]/10000}%</div>", unsafe_allow_html=True)
 
         except Exception as e:
-            st.error(f"Logic Error: {e}")
+            st.error(f"Application Error: {e}")
 
-    # Auto-refresh trigger
     if refresh_rate > 0:
         time.sleep(refresh_rate)
         st.rerun()
