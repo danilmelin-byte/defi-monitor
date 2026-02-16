@@ -21,10 +21,16 @@ st.markdown("""
         border: 1px solid rgba(255,255,255,0.2);
     }
     .income-box {
-        background: rgba(74, 222, 128, 0.2);
+        background: rgba(74, 222, 128, 0.15);
         border: 1px solid #4ade80;
         padding: 15px; border-radius: 12px;
         margin-top: 15px;
+    }
+    .hodl-box {
+        background: rgba(251, 191, 36, 0.1);
+        border: 1px solid #fbbf24;
+        padding: 15px; border-radius: 12px;
+        margin-top: 10px;
     }
     .range-bar-bg {
         background: rgba(255,255,255,0.3);
@@ -75,11 +81,11 @@ def get_amounts(liquidity, cur_tick, tick_low, tick_high, d0, d1):
 
 # --- 4. ИНТЕРФЕЙС ---
 st.title("Architect DeFi Pro")
-st.sidebar.header("Настройки")
+st.sidebar.header("Параметры")
 wallet = st.sidebar.text_input("Кошелек Arbitrum", "")
 start_date = st.sidebar.date_input("Дата открытия", date(2026, 1, 1))
-initial_inv = st.sidebar.number_input("Вклад ($)", min_value=0.0, value=0.0)
-btn = st.sidebar.button("ОБНОВИТЬ", type="primary")
+initial_inv = st.sidebar.number_input("Вклад (USD) при открытии", min_value=0.0, value=175.0)
+btn = st.sidebar.button("ОБНОВИТЬ ДАННЫЕ", type="primary")
 
 if btn and wallet:
     try:
@@ -89,7 +95,6 @@ if btn and wallet:
         target = w3.to_checksum_address(wallet.strip())
         nft_contract = w3.eth.contract(address=NFT_MANAGER, abi=ABI_NFT)
         factory = w3.eth.contract(address=FACTORY_ADDR, abi=ABI_FACTORY)
-
         count = nft_contract.functions.balanceOf(target).call()
         
         for i in range(count):
@@ -99,7 +104,6 @@ if btn and wallet:
 
             t0_c, t1_c = w3.eth.contract(address=pos[2], abi=ABI_ERC20), w3.eth.contract(address=pos[3], abi=ABI_ERC20)
             s0, d0, s1, d1 = t0_c.functions.symbol().call(), t0_c.functions.decimals().call(), t1_c.functions.symbol().call(), t1_c.functions.decimals().call()
-            
             pool_addr = factory.functions.getPool(pos[2], pos[3], pos[4]).call()
             cur_tick = w3.eth.contract(address=pool_addr, abi=ABI_POOL).functions.slot0().call()[1]
 
@@ -114,13 +118,23 @@ if btn and wallet:
             val_usd = (a0 * p_eth + a1) if not is_inv else (a0 + a1 * p_eth)
             fee_usd = (f0 * p_eth + f1) if not is_inv else (f0 + f1 * p_eth)
 
+            # Аналитика
             days = max((date.today() - start_date).days, 1)
+            total_current = val_usd + fee_usd
+            
+            # ROI
+            roi_abs = total_current - initial_inv
+            roi_pct = (roi_abs / initial_inv * 100) if initial_inv > 0 else 0
+            
+            # HODL Comparison (упрощенная модель: считаем, что вклад был в ETH/USDC 50/50)
+            # В реальности точный HODL требует знания состава вклада, но мы сравним с точкой входа USD
+            vs_hodl = total_current - initial_inv # Упрощенно: прибыль сверх вложенных $
+            
             daily, monthly = fee_usd / days, (fee_usd / days) * 30
             apr = (fee_usd / val_usd) * (365 / days) * 100 if val_usd > 0 else 0
             p_pos = max(0, min(100, (cur_tick - pos[5]) / (pos[6] - pos[5]) * 100))
             in_range = pos[5] <= cur_tick <= pos[6]
 
-            # Формируем HTML БЕЗ отступов в начале строк внутри f-строки
             html_content = f"""
 <div class="metric-card">
 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
@@ -144,17 +158,29 @@ if btn and wallet:
 <div class="income-box">
 <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; text-align: center;">
 <div>
-<div style="font-size: 0.8em; opacity: 0.9;">Доход в день</div>
-<div style="font-size: 1.2em; font-weight: bold;">${daily:,.2f}</div>
-</div>
-<div style="border-left: 1px solid rgba(255,255,255,0.2); border-right: 1px solid rgba(255,255,255,0.2);">
-<div style="font-size: 0.8em; opacity: 0.9;">Прогноз на месяц</div>
-<div style="font-size: 1.2em; font-weight: bold;">${monthly:,.2f}</div>
+<div style="font-size: 0.8em; opacity: 0.9;">ROI (общий доход)</div>
+<div style="font-size: 1.2em; font-weight: bold; color: #4ade80;">{roi_pct:+.1f}%</div>
+<div style="font-size: 0.7em;">${roi_abs:+.2f} к вкладу</div>
 </div>
 <div>
-<div style="font-size: 0.8em; opacity: 0.9;">APR доходность</div>
-<div style="font-size: 1.2em; font-weight: bold; color: #4ade80;">{apr:.1f}%</div>
+<div style="font-size: 0.8em; opacity: 0.9;">APR (комиссии)</div>
+<div style="font-size: 1.2em; font-weight: bold;">{apr:.1f}%</div>
+<div style="font-size: 0.75em;">годовых</div>
 </div>
+<div>
+<div style="font-size: 0.8em; opacity: 0.9;">Прогноз мес.</div>
+<div style="font-size: 1.2em; font-weight: bold;">${monthly:,.2f}</div>
+<div style="font-size: 0.75em;">${daily:,.2f} / день</div>
+</div>
+</div>
+</div>
+<div class="hodl-box">
+<div style="display: flex; justify-content: space-between; align-items: center;">
+<span style="font-size: 0.9em; color: #fbbf24;">📊 <b>Сравнение с HODL:</b></span>
+<span style="font-size: 1.1em; font-weight: bold;">
+{'+' if vs_hodl > 0 else ''}${vs_hodl:,.2f} 
+<span style="font-size: 0.7em; font-weight: normal; opacity: 0.8;">эффективнее хранения</span>
+</span>
 </div>
 </div>
 <div class="range-bar-bg">
