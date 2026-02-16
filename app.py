@@ -6,6 +6,7 @@ from datetime import date
 # --- 1. НАСТРОЙКИ СТРАНИЦЫ ---
 st.set_page_config(page_title="Architect DeFi Pro", layout="wide")
 
+# Стили для красивого интерфейса
 st.markdown("""
 <style>
     .metric-card {
@@ -46,6 +47,7 @@ NFT_MANAGER = "0xC36442b4a4522E871399CD717aBDD847Ab11FE88"
 FACTORY_ADDR = "0x1F98431c8aD98523631AE4a59f267346ea31F984"
 w3 = Web3(Web3.HTTPProvider(RPC_URL))
 
+# ABI контрактов
 ABI_NFT = [
     {"inputs":[{"name":"owner","type":"address"}],"name":"balanceOf","outputs":[{"name":"","type":"uint256"}],"type":"function"},
     {"inputs":[{"name":"owner","type":"address"},{"name":"index","type":"uint256"}],"name":"tokenOfOwnerByIndex","outputs":[{"name":"","type":"uint256"}],"type":"function"},
@@ -56,7 +58,7 @@ ABI_ERC20 = [{"inputs":[],"name":"symbol","outputs":[{"name":"","type":"string"}
 ABI_POOL = [{"inputs":[],"name":"slot0","outputs":[{"name":"sqrtPriceX96","type":"uint160"},{"name":"tick","type":"int24"}],"type":"function"}]
 ABI_FACTORY = [{"inputs":[{"name":"t0","type":"address"},{"name":"t1","type":"address"},{"name":"fee","type":"uint24"}],"name":"getPool","outputs":[{"name":"","type":"address"}],"type":"function"}]
 
-# --- 3. ФУНКЦИИ ---
+# --- 3. ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
 def tick_to_price(tick, d0, d1):
     return (1.0001 ** tick) * (10 ** (d0 - d1))
 
@@ -76,72 +78,85 @@ def get_amounts(liquidity, cur_tick, tick_low, tick_high, d0, d1):
 # --- 4. ИНТЕРФЕЙС ---
 st.title("Architect DeFi Pro")
 st.sidebar.header("Настройки монитора")
-wallet = st.sidebar.text_input("Кошелек Arbitrum", "")
+
+# ВВОД ДАННЫХ (Пустые по умолчанию для приватности)
+wallet = st.sidebar.text_input("Кошелек Arbitrum (0x...)", "")
 start_date = st.sidebar.date_input("Дата открытия позиции", date(2026, 1, 1))
-initial_investment = st.sidebar.number_input("Начальный вклад ($)", min_value=0.0, value=1000.0)
+initial_investment = st.sidebar.number_input("Начальный вклад ($)", min_value=0.0, value=0.0)
 
 btn = st.sidebar.button("ОБНОВИТЬ ДАННЫЕ", type="primary")
 
 if btn and wallet:
     try:
+        # 1. Получаем цену ETH
         r = requests.get("https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=usd", timeout=5).json()
         p_eth = r['ethereum']['usd']
 
-        target = w3.to_checksum_address(wallet)
+        # 2. Подключаем контракты
+        target = w3.to_checksum_address(wallet.strip())
         nft_contract = w3.eth.contract(address=NFT_MANAGER, abi=ABI_NFT)
         factory = w3.eth.contract(address=FACTORY_ADDR, abi=ABI_FACTORY)
 
+        # 3. Ищем NFT позиции
         count = nft_contract.functions.balanceOf(target).call()
         
+        if count == 0:
+            st.warning("На этом кошельке не найдено открытых позиций Uniswap V3 (Arbitrum).")
+
         for i in range(count):
             tid = nft_contract.functions.tokenOfOwnerByIndex(target, i).call()
             pos = nft_contract.functions.positions(tid).call()
-            if pos[7] == 0: continue
+            if pos[7] == 0: continue # Пропускаем пустые
 
-            # Данные токенов и пула
+            # Данные токенов
             t0_c, t1_c = w3.eth.contract(address=pos[2], abi=ABI_ERC20), w3.eth.contract(address=pos[3], abi=ABI_ERC20)
             s0, d0, s1, d1 = t0_c.functions.symbol().call(), t0_c.functions.decimals().call(), t1_c.functions.symbol().call(), t1_c.functions.decimals().call()
+            
+            # Пул и текущая цена
             pool_addr = factory.functions.getPool(pos[2], pos[3], pos[4]).call()
-            cur_tick = w3.eth.contract(address=pool_addr, abi=ABI_POOL).functions.slot0().call()[1]
+            pool_c = w3.eth.contract(address=pool_addr, abi=ABI_POOL)
+            cur_tick = pool_c.functions.slot0().call()[1]
 
-            # Симуляция комиссий
+            # Симуляция Collect (Живые комиссии)
             MAX_UINT128 = 2**128 - 1
             live_fees = nft_contract.functions.collect({"tokenId": tid, "recipient": target, "amount0Max": MAX_UINT128, "amount1Max": MAX_UINT128}).call({'from': target})
             f0, f1 = live_fees[0] / (10**d0), live_fees[1] / (10**d1)
 
-            # Цены и расчеты
+            # Цены с учетом инверсии (для USDC)
             is_inv = (s0 in ["USDC", "USDT", "DAI"])
             p_min_r, p_max_r, p_now_r = tick_to_price(pos[5], d0, d1), tick_to_price(pos[6], d0, d1), tick_to_price(cur_tick, d0, d1)
             p_min, p_max, p_now = (1/p_max_r, 1/p_min_r, 1/p_now_r) if is_inv else (p_min_r, p_max_r, p_now_r)
 
+            # Расчет стоимостей
             a0, a1 = get_amounts(pos[7], cur_tick, pos[5], pos[6], d0, d1)
             val_usd = (a0 * p_eth + a1) if not is_inv else (a0 + a1 * p_eth)
             fee_usd = (f0 * p_eth + f1) if not is_inv else (f0 + f1 * p_eth)
 
-            # --- БЛОК АНАЛИТИКИ ДОХОДНОСТИ ---
+            # Аналитика времени и доходности
             days_passed = (date.today() - start_date).days
-            if days_passed <= 0: days_passed = 1
+            days_passed = max(days_passed, 1)
             
             daily_income = fee_usd / days_passed
             monthly_forecast = daily_income * 30
-            # Считаем APR от текущей ликвидности
-            apr = (fee_usd / val_usd) * (365 / days_passed) * 100
+            apr = (fee_usd / val_usd) * (365 / days_passed) * 100 if val_usd > 0 else 0
 
+            # Позиция цены на полоске
             p_pos = max(0, min(100, (cur_tick - pos[5]) / (pos[6] - pos[5]) * 100))
             in_range = pos[5] <= cur_tick <= pos[6]
 
+            # ВЫВОД КАРТОЧКИ
             st.markdown(f"""
             <div class="metric-card">
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
                     <h2 style="margin:0;">{s0}/{s1} <span style="font-size: 0.6em; opacity: 0.7;">#{tid}</span></h2>
-                    <span style="padding: 5px 15px; border-radius: 20px; border: 1px solid #fff; font-size: 0.8em;">
+                    <span style="padding: 5px 15px; border-radius: 20px; border: 1px solid #fff; font-size: 0.8em; font-weight: bold;">
                         {'● В ДИАПАЗОНЕ' if in_range else '○ ВНЕ ДИАПАЗОНА'}
                     </span>
                 </div>
                 
                 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
                     <div class="stat-box">
-                        <div style="opacity: 0.8; font-size: 0.9em;">Текущий баланс</div>
+                        <div style="opacity: 0.8; font-size: 0.9em;">Текущая ликвидность</div>
                         <div style="font-size: 1.8em; font-weight: bold;">${val_usd:,.2f}</div>
                         <div style="font-size: 0.8em;">{a0:.4f} {s0} + {a1:.2f} {s1}</div>
                     </div>
@@ -155,15 +170,15 @@ if btn and wallet:
                 <div class="income-box">
                     <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; text-align: center;">
                         <div>
-                            <div style="font-size: 0.8em; opacity: 0.9;">В день</div>
+                            <div style="font-size: 0.8em; opacity: 0.9;">Доход в день</div>
                             <div style="font-size: 1.2em; font-weight: bold;">${daily_income:,.2f}</div>
                         </div>
                         <div style="border-left: 1px solid rgba(255,255,255,0.2); border-right: 1px solid rgba(255,255,255,0.2);">
-                            <div style="font-size: 0.8em; opacity: 0.9;">В месяц (прогноз)</div>
+                            <div style="font-size: 0.8em; opacity: 0.9;">Прогноз на месяц</div>
                             <div style="font-size: 1.2em; font-weight: bold;">${monthly_forecast:,.2f}</div>
                         </div>
                         <div>
-                            <div style="font-size: 0.8em; opacity: 0.9;">APR (доходность)</div>
+                            <div style="font-size: 0.8em; opacity: 0.9;">APR доходность</div>
                             <div style="font-size: 1.2em; font-weight: bold; color: #4ade80;">{apr:.1f}%</div>
                         </div>
                     </div>
@@ -174,12 +189,14 @@ if btn and wallet:
                     <div class="price-pointer" style="left: {p_pos}%;"></div>
                 </div>
                 <div style="display: flex; justify-content: space-between; font-size: 0.9em;">
-                    <span>Мин: {p_min:,.1f}</span>
+                    <span>Мин: <b>{p_min:,.1f}</b></span>
                     <span style="color: #fbbf24; font-weight: bold;">Цена: {p_now:,.1f}</span>
-                    <span>Макс: {p_max:,.1f}</span>
+                    <span>Макс: <b>{p_max:,.1f}</b></span>
                 </div>
             </div>
             """, unsafe_allow_html=True)
 
     except Exception as e:
-        st.error(f"Ошибка: {e}")
+        st.error(f"Системная ошибка: {e}")
+elif btn:
+    st.warning("Пожалуйста, введите адрес кошелька.")
