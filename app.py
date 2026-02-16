@@ -8,13 +8,10 @@ st.set_page_config(page_title="Architect DeFi Monitor", layout="wide", page_icon
 
 st.markdown("""
     <style>
-    .metric-card { background-color: #ffffff; padding: 15px; border-radius: 10px; border: 1px solid #eee; }
-    .stProgress > div > div > div > div { background-color: #00CC66 !important; }
+    .metric-card { background-color: #ffffff; padding: 15px; border-radius: 10px; border: 1px solid #eee; box-shadow: 2px 2px 5px rgba(0,0,0,0.05); }
     .alert-box { padding: 12px; border-radius: 7px; margin-bottom: 10px; border-left: 5px solid; font-weight: 500; }
     .alert-danger { background-color: #ffebee; border-left-color: #ef5350; color: #c62828; }
     .alert-warning { background-color: #fff3e0; border-left-color: #ffa726; color: #ef6c00; }
-    .usd-total { font-size: 1.4em; font-weight: bold; color: #1565C0; }
-    .fee-total { font-size: 1.2em; font-weight: bold; color: #2E7D32; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -50,43 +47,24 @@ def get_web3():
 
 w3 = get_web3()
 
-@st.cache_data(ttl=300)
-def get_usd_prices(symbols):
-    ids = [COINGECKO_MAP[s.upper()] for s in symbols if s.upper() in COINGECKO_MAP]
-    if not ids: return {}
-    url = f"https://api.coingecko.com/api/v3/simple/price?ids={','.join(set(ids))}&vs_currencies=usd"
-    try:
-        data = requests.get(url, timeout=5).json()
-        return {sym: data.get(COINGECKO_MAP.get(sym.upper()), {}).get('usd', 0) for sym in symbols}
-    except: return {}
-
-def get_amounts(liquidity, current_tick, tick_lower, tick_upper, dec0, dec1):
-    if liquidity == 0: return 0.0, 0.0
-    sqrt_p = 1.0001 ** (current_tick / 2)
-    sqrt_p_a = 1.0001 ** (tick_lower / 2)
-    sqrt_p_b = 1.0001 ** (tick_upper / 2)
-    
-    if current_tick < tick_lower:
-        a0 = liquidity * (sqrt_p_b - sqrt_p_a) / (sqrt_p_a * sqrt_p_b)
-        a1 = 0
-    elif current_tick < tick_upper:
-        a0 = liquidity * (sqrt_p_b - sqrt_p) / (sqrt_p * sqrt_p_b)
-        a1 = liquidity * (sqrt_p - sqrt_p_a)
-    else:
-        a0 = 0
-        a1 = liquidity * (sqrt_p_b - sqrt_p_a)
-    return a0 / (10**dec0), a1 / (10**dec1)
-
 def multicall_batch(calls_info):
     if not calls_info: return []
     mc_contract = w3.eth.contract(address=MULTICALL_ADDR, abi=MULTICALL_ABI)
-    # Исправленный вызов encodeABI через объект functions
-    encoded = [{'target': c[0].address, 'callData': c[0].functions[c[1]](*c[2]).encodeABI()} for c in calls_info]
+    
+    encoded = []
+    for contract_obj, fn_name, args in calls_info:
+        fn_obj = contract_obj.get_function_by_name(fn_name)
+        encoded.append({
+            'target': contract_obj.address, 
+            'callData': fn_obj(*args).encodeABI()
+        })
+    
     try:
         _, return_data = mc_contract.functions.aggregate(encoded).call()
         results = []
         for i, (contract, fn_name, _) in enumerate(calls_info):
-            out_types = [o['type'] for o in contract.get_function_by_name(fn_name).abi['outputs']]
+            fn_obj = contract.get_function_by_name(fn_name)
+            out_types = [o['type'] for o in fn_obj.abi['outputs']]
             decoded = w3.eth.codec.decode(out_types, return_data[i])
             results.append(decoded[0] if len(decoded) == 1 else decoded)
         return results
@@ -94,78 +72,83 @@ def multicall_batch(calls_info):
         st.error(f"Multicall error: {e}")
         return [None] * len(calls_info)
 
-# --- 5. САЙДБАР ---
+# --- 5. ИНТЕРФЕЙС ---
 with st.sidebar:
-    st.header("⚙️ Settings")
-    wallet_input = st.text_input("Wallet Address", value="0x995907fe97C9CAd3D310c4F384453E8676F4a170")
-    refresh_rate = st.selectbox("Auto-refresh", [0, 30, 60, 300], index=2)
-    btn_scan = st.button("🔎 Scan Network", use_container_width=True)
+    st.header("⚙️ Настройки")
+    wallet_input = st.text_input("Адрес кошелька", value="0x995907fe97C9CAd3D310c4F384453E8676F4a170")
+    refresh_rate = st.selectbox("Автообновление (сек)", [0, 30, 60, 300], index=2)
+    btn_scan = st.button("🔎 Сканировать", use_container_width=True)
 
-# --- 6. ОСНОВНАЯ ЛОГИКА ---
+# --- 6. ЛОГИКА ---
 if (btn_scan or refresh_rate > 0) and wallet_input:
-    wallet = w3.to_checksum_address(wallet_input)
-    manager = w3.eth.contract(address=NFT_MANAGER, abi=MANAGER_ABI)
-    factory = w3.eth.contract(address=FACTORY_ADDR, abi=FACTORY_ABI)
-    
-    with st.spinner("Analyzing DeFi Positions..."):
-        try:
+    try:
+        wallet = w3.to_checksum_address(wallet_input)
+        manager = w3.eth.contract(address=NFT_MANAGER, abi=MANAGER_ABI)
+        factory = w3.eth.contract(address=FACTORY_ADDR, abi=FACTORY_ABI)
+        
+        with st.spinner("Загрузка данных из Arbitrum..."):
             count = manager.functions.balanceOf(wallet).call()
             if count == 0:
-                st.warning("No active Uniswap V3 positions.")
+                st.warning("На этом кошельке нет активных позиций Uniswap V3.")
             else:
-                # 1. Получаем ID токенов
+                # 1. ID токенов
                 ids_calls = [(manager, 'tokenOfOwnerByIndex', [wallet, i]) for i in range(count)]
                 token_ids = multicall_batch(ids_calls)
                 
-                # 2. Получаем данные позиций
+                # 2. Данные позиций
                 pos_calls = [(manager, 'positions', [tid]) for tid in token_ids]
                 raw_pos = multicall_batch(pos_calls)
                 
-                # 3. Собираем метаданные токенов и пулов
+                # 3. Метаданные (Символы и Десятичные)
                 unique_tokens = list(set([p[2] for p in raw_pos] + [p[3] for p in raw_pos]))
                 meta_calls = []
                 for t in unique_tokens:
                     c = w3.eth.contract(address=t, abi=ERC20_ABI)
                     meta_calls.extend([(c, 'symbol', []), (c, 'decimals', [])])
                 
+                # 4. Адреса пулов
                 for p in raw_pos:
                     meta_calls.append((factory, 'getPool', [p[2], p[3], p[4]]))
                 
                 meta_res = multicall_batch(meta_calls)
                 
-                # Парсинг ответов
+                # Маппинг результатов
                 sym_map = {unique_tokens[i]: meta_res[i*2] for i in range(len(unique_tokens))}
                 dec_map = {unique_tokens[i]: meta_res[i*2+1] for i in range(len(unique_tokens))}
-                pool_map = { (raw_pos[i][2], raw_pos[i][3], raw_pos[i][4]): meta_res[len(unique_tokens)*2 + i] for i in range(len(raw_pos))}
                 
-                # 4. Получаем текущие тики в пулах
-                pool_addrs = list(set(pool_map.values()))
-                tick_calls = [(w3.eth.contract(address=a, abi=POOL_ABI), 'slot0', []) for a in pool_addrs if a != "0x0000000000000000000000000000000000000000"]
+                offset = len(unique_tokens) * 2
+                pool_map = {}
+                for i in range(len(raw_pos)):
+                    pool_map[i] = meta_res[offset + i]
+                
+                # 5. Текущие тики (цены) в пулах
+                unique_pools = list(set(pool_map.values()))
+                tick_calls = [(w3.eth.contract(address=a, abi=POOL_ABI), 'slot0', []) for a in unique_pools if a != "0x0000000000000000000000000000000000000000"]
                 tick_res = multicall_batch(tick_calls)
-                tick_map = {pool_addrs[i]: tick_res[i][1] for i in range(len(tick_res)) if tick_res[i]}
+                tick_data = {unique_pools[i]: tick_res[i][1] for i in range(len(tick_res)) if tick_res[i]}
 
-                # Рендеринг алертов
-                st.subheader("🔔 Priority Alerts")
-                alert_count = 0
+                # ВЫВОД РЕЗУЛЬТАТОВ
+                st.subheader("🔔 Статус позиций")
+                cols = st.columns(3)
+                
                 for i, p in enumerate(raw_pos):
                     tid = token_ids[i]
-                    pool = pool_map[(p[2], p[3], p[4])]
-                    curr_tick = tick_map.get(pool, 0)
-                    if p[7] > 0 and not (p[5] <= curr_tick <= p[6]):
-                        st.markdown(f"<div class='alert-box alert-danger'>🚨 Position #{tid} ({sym_map[p[2]]}/{sym_map[p[3]]}) OUT OF RANGE!</div>", unsafe_allow_html=True)
-                        alert_count += 1
-                
-                if alert_count == 0: st.success("✅ All positions are healthy.")
-
-                # Рендеринг карточек
-                st.divider()
-                cols = st.columns(3)
-                for i, p in enumerate(raw_pos):
+                    pool_addr = pool_map[i]
+                    curr_tick = tick_data.get(pool_addr, 0)
+                    
+                    in_range = p[5] <= curr_tick <= p[6]
+                    s0, s1 = sym_map[p[2]], sym_map[p[3]]
+                    
                     with cols[i % 3]:
-                        st.markdown(f"<div class='metric-card'><b>Pos #{token_ids[i]}</b><br>{sym_map[p[2]]}/{sym_map[p[3]]}<br>Fee: {p[4]/10000}%</div>", unsafe_allow_html=True)
+                        if in_range:
+                            st.markdown(f"<div class='alert-box' style='background-color: #e8f5e9; border-left-color: #4caf50; color: #2e7d32;'>✅ #{tid} {s0}/{s1}<br>В диапазоне</div>", unsafe_allow_html=True)
+                        else:
+                            st.markdown(f"<div class='alert-box alert-danger'>🚨 #{tid} {s0}/{s1}<br>ВНЕ ДИАПАЗОНА!</div>", unsafe_allow_html=True)
+                        
+                        st.caption(f"Комиссия: {p[4]/10000}%")
 
-        except Exception as e:
-            st.error(f"Application Error: {e}")
+    except Exception as e:
+        st.error(f"Ошибка приложения: {e}")
 
     if refresh_rate > 0:
         time.sleep(refresh_rate)
