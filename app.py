@@ -158,11 +158,7 @@ return a0 / (10**d0), a1 / (10**d1)
 ```
 
 def calculate_fees_earned(pool_contract, position_data, decimals0, decimals1):
-“””
-Расчет реальных несобранных комиссий на основе feeGrowth
-“””
 try:
-# Получаем глобальные показатели роста комиссий
 fee_growth_global_0 = pool_contract.functions.feeGrowthGlobal0X128().call()
 fee_growth_global_1 = pool_contract.functions.feeGrowthGlobal1X128().call()
 
@@ -173,7 +169,6 @@ fee_growth_global_1 = pool_contract.functions.feeGrowthGlobal1X128().call()
     fee_growth_inside_0_last = position_data[8]
     fee_growth_inside_1_last = position_data[9]
     
-    # Получаем данные о тиках
     try:
         tick_lower_data = pool_contract.functions.ticks(tick_lower).call()
         tick_upper_data = pool_contract.functions.ticks(tick_upper).call()
@@ -183,16 +178,13 @@ fee_growth_global_1 = pool_contract.functions.feeGrowthGlobal1X128().call()
         fee_growth_above_0 = tick_upper_data[2]
         fee_growth_above_1 = tick_upper_data[3]
     except:
-        # Если тики не инициализированы, используем 0
         fee_growth_below_0 = 0
         fee_growth_below_1 = 0
         fee_growth_above_0 = 0
         fee_growth_above_1 = 0
     
-    # Получаем текущий тик
     current_tick = pool_contract.functions.slot0().call()[1]
     
-    # Расчет fee growth inside
     if current_tick < tick_lower:
         fee_growth_inside_0 = fee_growth_below_0 - fee_growth_above_0
         fee_growth_inside_1 = fee_growth_below_1 - fee_growth_above_1
@@ -203,55 +195,47 @@ fee_growth_global_1 = pool_contract.functions.feeGrowthGlobal1X128().call()
         fee_growth_inside_0 = fee_growth_above_0 - fee_growth_below_0
         fee_growth_inside_1 = fee_growth_above_1 - fee_growth_below_1
     
-    # Убедимся, что значения положительные (обработка переполнения uint256)
     fee_growth_inside_0 = fee_growth_inside_0 % (2**256)
     fee_growth_inside_1 = fee_growth_inside_1 % (2**256)
     
-    # Расчет комиссий
     fees_0_delta = fee_growth_inside_0 - fee_growth_inside_0_last
     fees_1_delta = fee_growth_inside_1 - fee_growth_inside_1_last
     
-    # Обработка переполнения
     if fees_0_delta < 0:
         fees_0_delta += 2**256
     if fees_1_delta < 0:
         fees_1_delta += 2**256
     
-    # Финальный расчет в токенах
     Q128 = 2**128
     fees_0 = (liquidity * fees_0_delta) // Q128
     fees_1 = (liquidity * fees_1_delta) // Q128
     
-    # Добавляем уже накопленные tokensOwed
     fees_0 += position_data[10]
     fees_1 += position_data[11]
     
     return fees_0 / (10**decimals0), fees_1 / (10**decimals1)
 
 except Exception as e:
-    st.warning(f"⚠️ Не удалось рассчитать точные комиссии: {e}")
-    # Возвращаем базовые tokensOwed
     return position_data[10] / (10**decimals0), position_data[11] / (10**decimals1)
 ```
 
 # — 4. ИНТЕРФЕЙС —
 
-st.title(“🏦 Architect DeFi Pro Dashboard”)
+st.title(“Architect DeFi Pro Dashboard”)
 st.markdown(”### Управление ликвидностью Uniswap V3”)
 
-st.sidebar.header(“⚙️ Параметры”)
-wallet = st.sidebar.text_input(“🔑 Адрес кошелька”, “0x995907fe97C9CAd3D310c4F384453E8676F4a170”)
-btn = st.sidebar.button(“🔄 Обновить данные”, type=“primary”)
+st.sidebar.header(“Параметры”)
+wallet = st.sidebar.text_input(“Адрес кошелька”, “0x995907fe97C9CAd3D310c4F384453E8676F4a170”)
+btn = st.sidebar.button(“Обновить данные”, type=“primary”)
 
 if btn and wallet:
-with st.spinner(‘🔍 Загрузка данных…’):
+with st.spinner(‘Загрузка данных…’):
 try:
 addr = w3.to_checksum_address(wallet)
 nft_contract = w3.eth.contract(address=NFT_MANAGER, abi=ABI_NFT)
 factory = w3.eth.contract(address=FACTORY_ADDR, abi=ABI_FACTORY)
 
 ```
-        # Получаем цену ETH
         try:
             r = requests.get("https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=usd", timeout=5).json()
             p_eth = r['ethereum']['usd']
@@ -261,9 +245,9 @@ factory = w3.eth.contract(address=FACTORY_ADDR, abi=ABI_FACTORY)
         count = nft_contract.functions.balanceOf(addr).call()
         
         if count == 0:
-            st.info("📭 Позиции не найдены для данного кошелька")
+            st.info("Позиции не найдены для данного кошелька")
         else:
-            st.success(f"✅ Найдено активных позиций: **{count}**")
+            st.success(f"Найдено активных позиций: **{count}**")
             
             total_value = 0
             total_fees = 0
@@ -272,10 +256,9 @@ factory = w3.eth.contract(address=FACTORY_ADDR, abi=ABI_FACTORY)
                 tid = nft_contract.functions.tokenOfOwnerByIndex(addr, i).call()
                 pos = nft_contract.functions.positions(tid).call()
                 
-                if pos[7] == 0:  # Пропускаем позиции без ликвидности
+                if pos[7] == 0:
                     continue
                 
-                # Получаем информацию о токенах
                 token0_contract = w3.eth.contract(address=pos[2], abi=ABI_TOKEN)
                 token1_contract = w3.eth.contract(address=pos[3], abi=ABI_TOKEN)
                 
@@ -284,13 +267,11 @@ factory = w3.eth.contract(address=FACTORY_ADDR, abi=ABI_FACTORY)
                 d0 = token0_contract.functions.decimals().call()
                 d1 = token1_contract.functions.decimals().call()
                 
-                # Получаем пул и его данные
                 pool_addr = factory.functions.getPool(pos[2], pos[3], pos[4]).call()
                 pool_contract = w3.eth.contract(address=pool_addr, abi=ABI_POOL)
                 slot0 = pool_contract.functions.slot0().call()
                 cur_tick = slot0[1]
                 
-                # Определяем инверсию для пар со стейблкоинами
                 is_inverted = (s0 in ["USDC", "USDT", "DAI"])
                 
                 p_min_raw = tick_to_price(pos[5], d0, d1)
@@ -304,13 +285,9 @@ factory = w3.eth.contract(address=FACTORY_ADDR, abi=ABI_FACTORY)
                     p_min, p_max, p_now = p_min_raw, p_max_raw, p_now_raw
                     display_pair = f"{s0}/{s1}"
                 
-                # Балансы токенов в позиции
                 a0, a1 = get_amounts(pos[7], cur_tick, pos[5], pos[6], d0, d1)
-                
-                # ПРАВИЛЬНЫЙ РАСЧЕТ КОМИССИЙ
                 f0, f1 = calculate_fees_earned(pool_contract, pos, d0, d1)
                 
-                # Оценка стоимости
                 if s1 in ["USDC", "USDT", "DAI"]:
                     position_usd = (a0 * p_eth) + a1
                     fees_usd = (f0 * p_eth) + f1
@@ -324,25 +301,23 @@ factory = w3.eth.contract(address=FACTORY_ADDR, abi=ABI_FACTORY)
                 total_value += position_usd
                 total_fees += fees_usd
                 
-                # Визуализация позиции на шкале
                 p_range = pos[6] - pos[5]
                 p_pos = ((cur_tick - pos[5]) / p_range * 100) if p_range != 0 else 50
                 p_pos = max(0, min(100, p_pos))
                 in_range = pos[5] <= cur_tick <= pos[6]
 
-                # Отрисовка карточки
                 st.markdown(f"""
                 <div class="metric-card">
                     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
                         <h3>NFT #{tid}: {display_pair}</h3>
                         <span class="status-badge {'status-active' if in_range else 'status-inactive'}">
-                            {'● АКТИВНА' if in_range else '● НЕАКТИВНА'}
+                            {'АКТИВНА' if in_range else 'НЕАКТИВНА'}
                         </span>
                     </div>
                     
                     <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-bottom: 20px;">
                         <div class="stat-box">
-                            <div class="stat-label">💰 Депозит</div>
+                            <div class="stat-label">Депозит</div>
                             <div class="stat-value">${position_usd:,.2f}</div>
                             <div class="stat-details">
                                 {a0:.6f} {s0}<br>
@@ -351,7 +326,7 @@ factory = w3.eth.contract(address=FACTORY_ADDR, abi=ABI_FACTORY)
                         </div>
                         
                         <div class="stat-box">
-                            <div class="stat-label">📊 Ценовой диапазон</div>
+                            <div class="stat-label">Ценовой диапазон</div>
                             <div class="stat-value">{p_min:,.2f} - {p_max:,.2f}</div>
                             <div class="stat-details">
                                 Текущая цена: <strong>{p_now:,.2f}</strong>
@@ -362,7 +337,7 @@ factory = w3.eth.contract(address=FACTORY_ADDR, abi=ABI_FACTORY)
                     <div class="fees-highlight">
                         <div style="display: flex; justify-content: space-between; align-items: center;">
                             <div>
-                                <div style="font-size: 0.9em; opacity: 0.9;">💎 Несобранные комиссии</div>
+                                <div style="font-size: 0.9em; opacity: 0.9;">Несобранные комиссии</div>
                                 <div style="font-size: 2em; font-weight: bold; margin-top: 5px;">
                                     ${fees_usd:,.4f}
                                 </div>
@@ -380,28 +355,27 @@ factory = w3.eth.contract(address=FACTORY_ADDR, abi=ABI_FACTORY)
                     </div>
                     
                     <div class="range-labels">
-                        <span>📍 Мин: {p_min:,.1f}</span>
-                        <span style="color: #fbbf24;">⚡ Сейчас: {p_now:,.1f}</span>
-                        <span>📍 Макс: {p_max:,.1f}</span>
+                        <span>Мин: {p_min:,.1f}</span>
+                        <span style="color: #fbbf24;">Сейчас: {p_now:,.1f}</span>
+                        <span>Макс: {p_max:,.1f}</span>
                     </div>
                 </div>
                 """, unsafe_allow_html=True)
             
-            # Итоговая статистика
             st.markdown("---")
             col1, col2, col3 = st.columns(3)
             with col1:
-                st.metric("💵 Общая стоимость позиций", f"${total_value:,.2f}")
+                st.metric("Общая стоимость позиций", f"${total_value:,.2f}")
             with col2:
-                st.metric("💰 Всего несобранных комиссий", f"${total_fees:,.4f}")
+                st.metric("Всего несобранных комиссий", f"${total_fees:,.4f}")
             with col3:
                 roi = (total_fees / total_value * 100) if total_value > 0 else 0
-                st.metric("📈 ROI от комиссий", f"{roi:.3f}%")
+                st.metric("ROI от комиссий", f"{roi:.3f}%")
 
     except Exception as e:
-        st.error(f"❌ Произошла ошибка: {e}")
+        st.error(f"Произошла ошибка: {e}")
         st.exception(e)
 ```
 
 else:
-st.info(“👆 Введите адрес кошелька и нажмите ‘Обновить данные’”)
+st.info(“Введите адрес кошелька и нажмите ‘Обновить данные’”)
