@@ -2,6 +2,7 @@ import streamlit as st
 from web3 import Web3
 import requests
 from datetime import date
+import math
 
 # --- 1. НАСТРОЙКИ СТРАНИЦЫ ---
 st.set_page_config(page_title="Architect DeFi Pro", layout="wide")
@@ -25,17 +26,11 @@ st.markdown("""
         padding: 15px; border-radius: 12px;
         border: 1px solid rgba(255,255,255,0.2);
     }
-    .income-box {
-        background: rgba(74, 222, 128, 0.15);
-        border: 1px solid #4ade80;
-        padding: 15px; border-radius: 12px;
-        margin-top: 15px;
-    }
-    .hodl-box {
-        background: rgba(251, 191, 36, 0.1);
-        border: 1px solid #fbbf24;
-        padding: 15px; border-radius: 12px;
-        margin-top: 10px;
+    .exit-box {
+        background: rgba(15, 23, 42, 0.3);
+        border: 1px dashed rgba(255,255,255,0.3);
+        padding: 12px; border-radius: 12px;
+        margin-top: 15px; font-size: 0.85em;
     }
     .range-bar-bg {
         background: rgba(255,255,255,0.3);
@@ -51,7 +46,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- 2. КОНСТАНТЫ ---
+# --- 2. КОНСТАНТЫ И ФУНКЦИИ ---
 RPC_URL = "https://arb1.arbitrum.io/rpc"
 NFT_MANAGER = "0xC36442b4a4522E871399CD717aBDD847Ab11FE88"
 FACTORY_ADDR = "0x1F98431c8aD98523631AE4a59f267346ea31F984"
@@ -67,7 +62,6 @@ ABI_ERC20 = [{"inputs":[],"name":"symbol","outputs":[{"name":"","type":"string"}
 ABI_POOL = [{"inputs":[],"name":"slot0","outputs":[{"name":"sqrtPriceX96","type":"uint160"},{"name":"tick","type":"int24"}],"type":"function"}]
 ABI_FACTORY = [{"inputs":[{"name":"t0","type":"address"},{"name":"t1","type":"address"},{"name":"fee","type":"uint24"}],"name":"getPool","outputs":[{"name":"","type":"address"}],"type":"function"}]
 
-# --- 3. ФУНКЦИИ ---
 def tick_to_price(tick, d0, d1):
     return (1.0001 ** tick) * (10 ** (d0 - d1))
 
@@ -75,24 +69,18 @@ def get_amounts(liquidity, cur_tick, tick_low, tick_high, d0, d1):
     if liquidity == 0: return 0, 0
     sqrtP, sqrtA, sqrtB = 1.0001**(cur_tick/2), 1.0001**(tick_low/2), 1.0001**(tick_high/2)
     if cur_tick < tick_low:
-        a0 = liquidity * (sqrtB - sqrtA) / (sqrtA * sqrtB)
-        a1 = 0
+        a0 = liquidity * (sqrtB - sqrtA) / (sqrtA * sqrtB); a1 = 0
     elif cur_tick < tick_high:
-        a0 = liquidity * (sqrtB - sqrtP) / (sqrtP * sqrtB)
-        a1 = liquidity * (sqrtP - sqrtA)
+        a0 = liquidity * (sqrtB - sqrtP) / (sqrtP * sqrtB); a1 = liquidity * (sqrtP - sqrtA)
     else:
-        a0, a1 = 0, liquidity * (sqrtB - sqrtA)
+        a0 = 0; a1 = liquidity * (sqrtB - sqrtA)
     return a0 / (10**d0), a1 / (10**d1)
 
-# --- 4. ИНТЕРФЕЙС ---
-st.title("Architect DeFi Pro")
+# --- 3. ИНТЕРФЕЙС ---
 st.sidebar.header("Параметры")
-
-# Ввод кошелька с памятью
 wallet = st.sidebar.text_input("Кошелек Arbitrum", value=st.session_state.wallet)
 start_date = st.sidebar.date_input("Дата открытия", date(2026, 1, 1))
 
-# Два окна для вклада
 st.sidebar.write("Вклад при открытии:")
 inv_usdc = st.sidebar.number_input("USDC", min_value=0.0, value=float(st.session_state.inv_usdc))
 inv_eth = st.sidebar.number_input("ETH", min_value=0.0, value=float(st.session_state.inv_eth))
@@ -100,18 +88,11 @@ inv_eth = st.sidebar.number_input("ETH", min_value=0.0, value=float(st.session_s
 btn = st.sidebar.button("ОБНОВИТЬ ДАННЫЕ", type="primary")
 
 if btn and wallet:
-    # Сохраняем введенные данные
-    st.session_state.wallet = wallet
-    st.session_state.inv_usdc = inv_usdc
-    st.session_state.inv_eth = inv_eth
-
+    st.session_state.wallet, st.session_state.inv_usdc, st.session_state.inv_eth = wallet, inv_usdc, inv_eth
     try:
         r = requests.get("https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=usd", timeout=5).json()
         p_eth = r['ethereum']['usd']
-        
-        # Расчет базы входа в USD
         initial_inv = inv_usdc + (inv_eth * p_eth)
-
         target = w3.to_checksum_address(wallet.strip())
         nft_contract = w3.eth.contract(address=NFT_MANAGER, abi=ABI_NFT)
         factory = w3.eth.contract(address=FACTORY_ADDR, abi=ABI_FACTORY)
@@ -138,79 +119,51 @@ if btn and wallet:
             val_usd = (a0 * p_eth + a1) if not is_inv else (a0 + a1 * p_eth)
             fee_usd = (f0 * p_eth + f1) if not is_inv else (f0 + f1 * p_eth)
 
-            days = max((date.today() - start_date).days, 1)
-            total_current = val_usd + fee_usd
-            
-            roi_abs = total_current - initial_inv
-            roi_pct = (roi_abs / initial_inv * 100) if initial_inv > 0 else 0
-            
-            vs_hodl = total_current - initial_inv 
-            
-            daily, monthly = fee_usd / days, (fee_usd / days) * 30
-            apr = (fee_usd / val_usd) * (365 / days) * 100 if val_usd > 0 else 0
+            # РАСЧЕТ ВЫХОДА ИЗ ДИАПАЗОНА
+            sqrtA, sqrtB = math.sqrt(p_min), math.sqrt(p_max)
+            # Сколько будет USDC при выходе вверх
+            exit_usdc = pos[7] * (sqrtB - sqrtA) / (10**d1) if is_inv else pos[7] * (sqrtB - sqrtA) / (10**d0)
+            # Средняя цена ETH при выходе вниз (математическое среднее позиции)
+            avg_buy_price = math.sqrt(p_min * p_max)
+
+            roi_pct = ((val_usd + fee_usd - initial_inv) / initial_inv * 100) if initial_inv > 0 else 0
             p_pos = max(0, min(100, (cur_tick - pos[5]) / (pos[6] - pos[5]) * 100))
-            in_range = pos[5] <= cur_tick <= pos[6]
 
-            html_content = f"""
+            st.markdown(f"""
 <div class="metric-card">
-<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
-<h2 style="margin:0;">{s0}/{s1} <span style="font-size: 0.6em; opacity: 0.7;">#{tid}</span></h2>
-<span style="padding: 5px 15px; border-radius: 20px; border: 1px solid #fff; font-size: 0.8em; font-weight: bold;">
-{'● В ДИАПАЗОНЕ' if in_range else '○ ВНЕ ДИАПАЗОНА'}
-</span>
-</div>
-<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
-<div class="stat-box">
-<div style="opacity: 0.8; font-size: 0.9em;">Текущая ликвидность</div>
-<div style="font-size: 1.8em; font-weight: bold;">${val_usd:,.2f}</div>
-<div style="font-size: 0.8em;">{a0:.4f} {s0} + {a1:.2f} {s1}</div>
-</div>
-<div class="stat-box" style="background: rgba(16, 185, 129, 0.2);">
-<div style="opacity: 0.8; font-size: 0.9em;">Накоплено комиссий</div>
-<div style="font-size: 1.8em; font-weight: bold; color: #4ade80;">+ ${fee_usd:,.2f}</div>
-<div style="font-size: 0.8em;">{f0:.5f} {s0} + {f1:.4f} {s1}</div>
-</div>
-</div>
-<div class="income-box">
-<div style="display: grid; grid-template-columns: 1fr 1fr 1fr; text-align: center;">
-<div>
-<div style="font-size: 0.8em; opacity: 0.9;">ROI (общий доход)</div>
-<div style="font-size: 1.2em; font-weight: bold; color: #4ade80;">{roi_pct:+.1f}%</div>
-<div style="font-size: 0.7em;">${roi_abs:+.2f} к вкладу</div>
-</div>
-<div>
-<div style="font-size: 0.8em; opacity: 0.9;">APR (комиссии)</div>
-<div style="font-size: 1.2em; font-weight: bold;">{apr:.1f}%</div>
-<div style="font-size: 0.75em;">годовых</div>
-</div>
-<div>
-<div style="font-size: 0.8em; opacity: 0.9;">Прогноз мес.</div>
-<div style="font-size: 1.2em; font-weight: bold;">${monthly:,.2f}</div>
-<div style="font-size: 0.75em;">${daily:,.2f} / день</div>
-</div>
-</div>
-</div>
-<div class="hodl-box">
-<div style="display: flex; justify-content: space-between; align-items: center;">
-<span style="font-size: 0.9em; color: #fbbf24;">📊 <b>Сравнение с HODL:</b></span>
-<span style="font-size: 1.1em; font-weight: bold;">
-{'+' if vs_hodl > 0 else ''}${vs_hodl:,.2f} 
-<span style="font-size: 0.7em; font-weight: normal; opacity: 0.8;">эффективнее хранения</span>
-</span>
-</div>
-</div>
-<div class="range-bar-bg">
-<div class="range-fill" style="width: 100%;"></div>
-<div class="price-pointer" style="left: {p_pos}%;"></div>
-</div>
-<div style="display: flex; justify-content: space-between; font-size: 0.9em;">
-<span>Мин: <b>{p_min:,.1f}</b></span>
-<span style="color: #fbbf24; font-weight: bold;">Цена: {p_now:,.1f}</span>
-<span>Макс: <b>{p_max:,.1f}</b></span>
-</div>
-</div>
-"""
-            st.markdown(html_content, unsafe_allow_html=True)
+    <div style="display: flex; justify-content: space-between; align-items: center;">
+        <h2 style="margin:0;">{s0}/{s1} <span style="font-size: 0.6em; opacity: 0.7;">#{tid}</span></h2>
+        <span style="font-size: 1.5em; font-weight: bold; color: #4ade80;">{roi_pct:+.1f}%</span>
+    </div>
+    
+    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-top: 15px;">
+        <div class="stat-box">
+            <div style="opacity: 0.7; font-size: 0.8em;">Ликвидность</div>
+            <div style="font-size: 1.4em; font-weight: bold;">${val_usd:,.2f}</div>
+        </div>
+        <div class="stat-box" style="background: rgba(16, 185, 129, 0.2);">
+            <div style="opacity: 0.7; font-size: 0.8em;">Комиссии</div>
+            <div style="font-size: 1.4em; font-weight: bold; color: #4ade80;">+${fee_usd:,.2f}</div>
+        </div>
+    </div>
 
+    <div class="exit-box">
+        <div style="display: flex; justify-content: space-between;">
+            <span>📉 При выходе вниз (в ETH):</span>
+            <b>Средняя цена покупки ~{avg_buy_price:,.1f}</b>
+        </div>
+        <div style="display: flex; justify-content: space-between; margin-top: 5px;">
+            <span>📈 При выходе вверх (в USDC):</span>
+            <b>Итого будет ~{exit_usdc:,.1f} USDC</b>
+        </div>
+    </div>
+
+    <div class="range-bar-bg"><div class="range-fill" style="width: 100%;"></div><div class="price-pointer" style="left: {p_pos}%;"></div></div>
+    <div style="display: flex; justify-content: space-between; font-size: 0.8em;">
+        <span>Мин: {p_min:,.1f}</span>
+        <span style="color: #fbbf24; font-weight: bold;">Цена: {p_now:,.1f}</span>
+        <span>Макс: {p_max:,.1f}</span>
+    </div>
+</div>""", unsafe_allow_html=True)
     except Exception as e:
         st.error(f"Ошибка: {e}")
