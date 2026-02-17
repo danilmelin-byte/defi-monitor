@@ -6,7 +6,7 @@ from datetime import date
 # --- 1. НАСТРОЙКИ СТРАНИЦЫ ---
 st.set_page_config(page_title="Architect DeFi Pro", layout="wide")
 
-# Инициализация сессии (чтобы данные не стирались)
+# Инициализация сессии
 if "wallet" not in st.session_state: st.session_state.wallet = ""
 if "inv_usdc" not in st.session_state: st.session_state.inv_usdc = 175.0
 if "inv_eth" not in st.session_state: st.session_state.inv_eth = 0.0
@@ -24,13 +24,6 @@ st.markdown("""
         background: rgba(255,255,255,0.03);
         padding: 15px; border-radius: 16px;
         border: 1px solid rgba(255,255,255,0.1);
-    }
-    .buffer-box {
-        background: rgba(251, 191, 36, 0.1);
-        border: 1px solid rgba(251, 191, 36, 0.2);
-        padding: 10px; border-radius: 12px;
-        margin-bottom: 15px; text-align: center;
-        font-size: 0.85rem; color: #fbbf24;
     }
     .range-bar-bg {
         background: rgba(255,255,255,0.05);
@@ -62,7 +55,16 @@ ABI_ERC20 = [{"inputs":[],"name":"symbol","outputs":[{"name":"","type":"string"}
 ABI_POOL = [{"inputs":[],"name":"slot0","outputs":[{"name":"sqrtPriceX96","type":"uint160"},{"name":"tick","type":"int24"}],"type":"function"}]
 ABI_FACTORY = [{"inputs":[{"name":"t0","type":"address"},{"name":"t1","type":"address"},{"name":"fee","type":"uint24"}],"name":"getPool","outputs":[{"name":"","type":"address"}],"type":"function"}]
 
-# --- 3. ФУНКЦИИ ---
+# --- 3. ПОЛУЧЕНИЕ ЦЕНЫ (ВНЕ БЛОКОВ) ---
+@st.cache_data(ttl=60)
+def get_eth_price():
+    try:
+        return requests.get("https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=usd", timeout=5).json()['ethereum']['usd']
+    except:
+        return 2700.0  # Запасной вариант
+
+current_p_eth = get_eth_price()
+
 def tick_to_price(tick, d0, d1):
     return (1.0001 ** tick) * (10 ** (d0 - d1))
 
@@ -77,43 +79,29 @@ def get_amounts(liquidity, cur_tick, tick_low, tick_high, d0, d1):
         a0 = 0; a1 = liquidity * (sqrtB - sqrtA)
     return a0 / (10**d0), a1 / (10**d1)
 
-# --- 4. САЙДБАР (ОБНОВЛЕННЫЙ) ---
+# --- 4. САЙДБАР ---
 st.sidebar.title("💎 Конфигурация")
-
-# Поле кошелька
 wallet_val = st.sidebar.text_input("Кошелек Arbitrum", value=st.session_state.wallet)
-
-# Дата
 date_val = st.sidebar.date_input("Дата открытия", date(2026, 1, 1))
 
-st.sidebar.markdown("---")
 st.sidebar.write("💰 **Вклад в позицию:**")
-
-# Две колонки для ввода валют
 col_u, col_e = st.sidebar.columns(2)
 with col_u:
-    u_val = st.number_input("USDC", value=st.session_state.inv_usdc, step=10.0)
+    u_val = st.number_input("USDC", value=float(st.session_state.inv_usdc), step=10.0, min_value=0.0)
 with col_e:
-    e_val = st.number_input("ETH", value=st.session_state.inv_eth, step=0.01)
+    e_val = st.number_input("ETH", value=float(st.session_state.inv_eth), step=0.01, min_value=0.0)
 
-# Считаем базу входа (нужна цена ETH)
-try:
-    eth_p_sidebar = requests.get("https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=usd", timeout=3).json()['ethereum']['usd']
-    base_usd = u_val + (e_val * eth_p_sidebar)
-    st.sidebar.info(f"Итого база входа: **${base_usd:,.2f}**")
-except:
-    base_usd = u_val + (e_val * 2700) # Заглушка если API упал
+base_usd = u_val + (e_val * current_p_eth)
+st.sidebar.info(f"База входа: **${base_usd:,.2f}**")
 
 btn = st.sidebar.button("ОБНОВИТЬ И ЗАПОМНИТЬ", type="primary", use_container_width=True)
 
 if btn and wallet_val:
-    # Сохраняем в сессию
     st.session_state.wallet = wallet_val
     st.session_state.inv_usdc = u_val
     st.session_state.inv_eth = e_val
 
     try:
-        p_eth = eth_p_sidebar
         target = w3.to_checksum_address(wallet_val.strip())
         nft_contract = w3.eth.contract(address=NFT_MANAGER, abi=ABI_NFT)
         factory = w3.eth.contract(address=FACTORY_ADDR, abi=ABI_FACTORY)
@@ -139,19 +127,12 @@ if btn and wallet_val:
             p_min, p_max, p_now = (1/p_max_r, 1/p_min_r, 1/p_now_r) if is_inv else (p_min_r, p_max_r, p_now_r)
 
             a0, a1 = get_amounts(pos[7], cur_tick, pos[5], pos[6], d0, d1)
-            val_usd = (a0 * p_eth + a1) if not is_inv else (a0 + a1 * p_eth)
-            fee_usd = (f0 * p_eth + f1) if not is_inv else (f0 + f1 * p_eth)
+            val_usd = (a0 * current_p_eth + a1) if not is_inv else (a0 + a1 * current_p_eth)
+            fee_usd = (f0 * current_p_eth + f1) if not is_inv else (f0 + f1 * current_p_eth)
 
-            days = max((date.today() - date_val).days, 1)
             roi_pct = ((val_usd + fee_usd - base_usd) / base_usd * 100) if base_usd > 0 else 0
             in_range = pos[5] <= cur_tick <= pos[6]
             p_pos = max(0, min(100, (cur_tick - pos[5]) / (pos[6] - pos[5]) * 100))
-
-            buffer_html = ""
-            if in_range:
-                d_low = ((p_now - p_min) / p_now) * 100
-                d_high = ((p_max - p_now) / p_now) * 100
-                buffer_html = f'<div class="buffer-box">🛡️ Запас: <b>{d_low:.1f}%</b> до низа | <b>{d_high:.1f}%</b> до верха</div>'
 
             st.markdown(f"""
 <div class="metric-card">
@@ -162,17 +143,14 @@ if btn and wallet_val:
             <div style="font-size: 1.4rem; font-weight: 800; color: {'#4ade80' if roi_pct >= 0 else '#f87171'};">{roi_pct:+.2f}%</div>
         </div>
     </div>
-    {buffer_html}
     <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-bottom: 20px;">
         <div class="stat-box">
             <div style="font-size: 0.7rem; opacity: 0.5;">ТЕКУЩЕЕ ТЕЛО</div>
             <div style="font-size: 1.3rem; font-weight: 700;">${val_usd:,.2f}</div>
-            <div style="font-size: 0.7rem; opacity: 0.6;">{a0:.4f} {s0} | {a1:.2f} {s1}</div>
         </div>
         <div class="stat-box" style="border-color: rgba(45, 212, 191, 0.3);">
             <div style="font-size: 0.7rem; opacity: 0.5;">КОМИССИИ</div>
             <div style="font-size: 1.3rem; font-weight: 700; color: #2dd4bf;">+${fee_usd:,.2f}</div>
-            <div style="font-size: 0.7rem; opacity: 0.6;">{f0:.5f} {s0} | {f1:.4f} {s1}</div>
         </div>
     </div>
     <div class="range-bar-bg"><div class="range-fill" style="width: 100%;"></div><div class="price-pointer" style="left: {p_pos}%;"></div></div>
