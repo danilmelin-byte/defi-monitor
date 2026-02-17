@@ -6,7 +6,7 @@ from datetime import date
 # --- 1. НАСТРОЙКИ СТРАНИЦЫ ---
 st.set_page_config(page_title="Architect DeFi Pro", layout="wide")
 
-# Инициализация сессии (храним данные, пока открыта вкладка)
+# Инициализация сессии (чтобы данные не стирались)
 if "wallet" not in st.session_state: st.session_state.wallet = ""
 if "inv_usdc" not in st.session_state: st.session_state.inv_usdc = 175.0
 if "inv_eth" not in st.session_state: st.session_state.inv_eth = 0.0
@@ -14,34 +14,34 @@ if "inv_eth" not in st.session_state: st.session_state.inv_eth = 0.0
 st.markdown("""
 <style>
     .metric-card {
-        background: linear-gradient(135deg, #1e3a8a 0%, #3b82f6 100%);
-        padding: 25px; border-radius: 20px;
-        box-shadow: 0 10px 25px rgba(0,0,0,0.2);
-        margin-bottom: 25px; color: #fff;
+        background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+        padding: 25px; border-radius: 24px;
+        box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+        margin-bottom: 25px; color: #f8fafc;
+        border: 1px solid rgba(255,255,255,0.05);
     }
     .stat-box {
-        background: rgba(255,255,255,0.15);
-        backdrop-filter: blur(5px);
-        padding: 15px; border-radius: 12px;
-        border: 1px solid rgba(255,255,255,0.2);
+        background: rgba(255,255,255,0.03);
+        padding: 15px; border-radius: 16px;
+        border: 1px solid rgba(255,255,255,0.1);
     }
     .buffer-box {
-        background: rgba(251, 191, 36, 0.15);
-        border: 1px solid #fbbf24;
+        background: rgba(251, 191, 36, 0.1);
+        border: 1px solid rgba(251, 191, 36, 0.2);
         padding: 10px; border-radius: 12px;
         margin-bottom: 15px; text-align: center;
         font-size: 0.85rem; color: #fbbf24;
     }
     .range-bar-bg {
-        background: rgba(255,255,255,0.3);
-        height: 12px; border-radius: 6px;
-        position: relative; margin: 20px 0;
+        background: rgba(255,255,255,0.05);
+        height: 10px; border-radius: 5px;
+        position: relative; margin: 25px 0 10px 0;
     }
-    .range-fill { background: #4ade80; height: 100%; border-radius: 6px; opacity: 0.5; }
+    .range-fill { background: linear-gradient(90deg, #2dd4bf, #4ade80); height: 100%; border-radius: 5px; opacity: 0.2; }
     .price-pointer {
-        position: absolute; top: -6px; width: 6px; height: 24px;
-        background: #fbbf24; border-radius: 3px;
-        box-shadow: 0 0 10px #fbbf24;
+        position: absolute; top: -6px; width: 4px; height: 22px;
+        background: #fbbf24; border-radius: 2px;
+        box-shadow: 0 0 15px #fbbf24;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -77,32 +77,44 @@ def get_amounts(liquidity, cur_tick, tick_low, tick_high, d0, d1):
         a0 = 0; a1 = liquidity * (sqrtB - sqrtA)
     return a0 / (10**d0), a1 / (10**d1)
 
-# --- 4. САЙДБАР ---
-st.sidebar.title("💎 Параметры")
-wallet = st.sidebar.text_input("Кошелек", value=st.session_state.wallet)
-start_date = st.sidebar.date_input("Дата открытия", date(2026, 1, 1))
+# --- 4. САЙДБАР (ОБНОВЛЕННЫЙ) ---
+st.sidebar.title("💎 Конфигурация")
+
+# Поле кошелька
+wallet_val = st.sidebar.text_input("Кошелек Arbitrum", value=st.session_state.wallet)
+
+# Дата
+date_val = st.sidebar.date_input("Дата открытия", date(2026, 1, 1))
 
 st.sidebar.markdown("---")
-st.sidebar.write("💰 Вклад при открытии:")
-inv_usdc = st.sidebar.number_input("USDC", value=st.session_state.inv_usdc)
-inv_eth = st.sidebar.number_input("ETH", value=st.session_state.inv_eth)
+st.sidebar.write("💰 **Вклад в позицию:**")
 
-btn = st.sidebar.button("ОБНОВИТЬ", type="primary", use_container_width=True)
+# Две колонки для ввода валют
+col_u, col_e = st.sidebar.columns(2)
+with col_u:
+    u_val = st.number_input("USDC", value=st.session_state.inv_usdc, step=10.0)
+with col_e:
+    e_val = st.number_input("ETH", value=st.session_state.inv_eth, step=0.01)
 
-if btn and wallet:
-    # Сохраняем в память
-    st.session_state.wallet = wallet
-    st.session_state.inv_usdc = inv_usdc
-    st.session_state.inv_eth = inv_eth
+# Считаем базу входа (нужна цена ETH)
+try:
+    eth_p_sidebar = requests.get("https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=usd", timeout=3).json()['ethereum']['usd']
+    base_usd = u_val + (e_val * eth_p_sidebar)
+    st.sidebar.info(f"Итого база входа: **${base_usd:,.2f}**")
+except:
+    base_usd = u_val + (e_val * 2700) # Заглушка если API упал
+
+btn = st.sidebar.button("ОБНОВИТЬ И ЗАПОМНИТЬ", type="primary", use_container_width=True)
+
+if btn and wallet_val:
+    # Сохраняем в сессию
+    st.session_state.wallet = wallet_val
+    st.session_state.inv_usdc = u_val
+    st.session_state.inv_eth = e_val
 
     try:
-        r = requests.get("https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=usd", timeout=5).json()
-        p_eth = r['ethereum']['usd']
-        
-        # Считаем суммарный вход в USD по текущему курсу
-        total_initial_usd = inv_usdc + (inv_eth * p_eth)
-
-        target = w3.to_checksum_address(wallet.strip())
+        p_eth = eth_p_sidebar
+        target = w3.to_checksum_address(wallet_val.strip())
         nft_contract = w3.eth.contract(address=NFT_MANAGER, abi=ABI_NFT)
         factory = w3.eth.contract(address=FACTORY_ADDR, abi=ABI_FACTORY)
         count = nft_contract.functions.balanceOf(target).call()
@@ -130,8 +142,8 @@ if btn and wallet:
             val_usd = (a0 * p_eth + a1) if not is_inv else (a0 + a1 * p_eth)
             fee_usd = (f0 * p_eth + f1) if not is_inv else (f0 + f1 * p_eth)
 
-            days = max((date.today() - start_date).days, 1)
-            roi_pct = ((val_usd + fee_usd - total_initial_usd) / total_initial_usd * 100) if total_initial_usd > 0 else 0
+            days = max((date.today() - date_val).days, 1)
+            roi_pct = ((val_usd + fee_usd - base_usd) / base_usd * 100) if base_usd > 0 else 0
             in_range = pos[5] <= cur_tick <= pos[6]
             p_pos = max(0, min(100, (cur_tick - pos[5]) / (pos[6] - pos[5]) * 100))
 
@@ -143,31 +155,31 @@ if btn and wallet:
 
             st.markdown(f"""
 <div class="metric-card">
-    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
-        <h2 style="margin:0;">{s0}/{s1} <span style="font-size: 0.6em; opacity: 0.7;">#{tid}</span></h2>
-        <span style="font-size: 1.2rem; font-weight: 800; color: {'#4ade80' if roi_pct >= 0 else '#f87171'};">{roi_pct:+.2f}% ROI</span>
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+        <h2 style="margin:0; color: #2dd4bf;">{s0}/{s1} <span style="font-size: 0.6em; opacity: 0.5;">#{tid}</span></h2>
+        <div style="text-align: right;">
+            <div style="font-size: 0.7rem; opacity: 0.5;">TOTAL ROI</div>
+            <div style="font-size: 1.4rem; font-weight: 800; color: {'#4ade80' if roi_pct >= 0 else '#f87171'};">{roi_pct:+.2f}%</div>
+        </div>
     </div>
     {buffer_html}
-    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-bottom: 15px;">
+    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-bottom: 20px;">
         <div class="stat-box">
-            <div style="font-size: 0.8rem; opacity: 0.8;">Тело позиции</div>
-            <div style="font-size: 1.3rem; font-weight: bold;">${val_usd:,.2f}</div>
-            <div style="font-size: 0.7rem; opacity: 0.6;">{a0:.4f} {s0} + {a1:.2f} {s1}</div>
+            <div style="font-size: 0.7rem; opacity: 0.5;">ТЕКУЩЕЕ ТЕЛО</div>
+            <div style="font-size: 1.3rem; font-weight: 700;">${val_usd:,.2f}</div>
+            <div style="font-size: 0.7rem; opacity: 0.6;">{a0:.4f} {s0} | {a1:.2f} {s1}</div>
         </div>
-        <div class="stat-box" style="background: rgba(74, 222, 128, 0.2);">
-            <div style="font-size: 0.8rem; opacity: 0.8;">Комиссии</div>
-            <div style="font-size: 1.3rem; font-weight: bold; color: #4ade80;">+${fee_usd:,.2f}</div>
-            <div style="font-size: 0.7rem; opacity: 0.6;">{f0:.5f} {s0} + {f1:.4f} {s1}</div>
+        <div class="stat-box" style="border-color: rgba(45, 212, 191, 0.3);">
+            <div style="font-size: 0.7rem; opacity: 0.5;">КОМИССИИ</div>
+            <div style="font-size: 1.3rem; font-weight: 700; color: #2dd4bf;">+${fee_usd:,.2f}</div>
+            <div style="font-size: 0.7rem; opacity: 0.6;">{f0:.5f} {s0} | {f1:.4f} {s1}</div>
         </div>
     </div>
-    <div class="range-bar-bg">
-        <div class="range-fill" style="width: 100%;"></div>
-        <div class="price-pointer" style="left: {p_pos}%;"></div>
-    </div>
-    <div style="display: flex; justify-content: space-between; font-size: 0.8rem;">
-        <span>Мин: <b>{p_min:,.1f}</b></span>
-        <span style="color: #fbbf24; font-weight: bold;">Цена: {p_now:,.1f}</span>
-        <span>Макс: <b>{p_max:,.1f}</b></span>
+    <div class="range-bar-bg"><div class="range-fill" style="width: 100%;"></div><div class="price-pointer" style="left: {p_pos}%;"></div></div>
+    <div style="display: flex; justify-content: space-between; font-size: 0.8rem; opacity: 0.8;">
+        <span>MIN: <b>{p_min:,.1f}</b></span>
+        <span style="color: #fbbf24; font-weight: bold;">ЦЕНА: {p_now:,.1f}</span>
+        <span>MAX: <b>{p_max:,.1f}</b></span>
     </div>
 </div>""", unsafe_allow_html=True)
 
