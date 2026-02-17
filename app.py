@@ -7,7 +7,7 @@ import math
 # --- 1. НАСТРОЙКИ СТРАНИЦЫ ---
 st.set_page_config(page_title="Architect DeFi Pro", layout="wide")
 
-# Память для сохранения данных
+# Восстанавливаем память сессии
 if "wallet" not in st.session_state: st.session_state.wallet = ""
 if "inv_usdc" not in st.session_state: st.session_state.inv_usdc = 175.0
 if "inv_eth" not in st.session_state: st.session_state.inv_eth = 0.0
@@ -27,10 +27,10 @@ st.markdown("""
         border: 1px solid rgba(255,255,255,0.2);
     }
     .exit-box {
-        background: rgba(15, 23, 42, 0.3);
-        border: 1px dashed rgba(255,255,255,0.3);
-        padding: 12px; border-radius: 12px;
-        margin-top: 15px; font-size: 0.85em;
+        background: rgba(15, 23, 42, 0.4);
+        border: 1px dashed #4ade80;
+        padding: 15px; border-radius: 12px;
+        margin-top: 15px;
     }
     .range-bar-bg {
         background: rgba(255,255,255,0.3);
@@ -62,22 +62,28 @@ ABI_ERC20 = [{"inputs":[],"name":"symbol","outputs":[{"name":"","type":"string"}
 ABI_POOL = [{"inputs":[],"name":"slot0","outputs":[{"name":"sqrtPriceX96","type":"uint160"},{"name":"tick","type":"int24"}],"type":"function"}]
 ABI_FACTORY = [{"inputs":[{"name":"t0","type":"address"},{"name":"t1","type":"address"},{"name":"fee","type":"uint24"}],"name":"getPool","outputs":[{"name":"","type":"address"}],"type":"function"}]
 
-def tick_to_price(tick, d0, d1):
-    return (1.0001 ** tick) * (10 ** (d0 - d1))
+def tick_to_price(tick, d0, d1): return (1.0001 ** tick) * (10 ** (d0 - d1))
 
 def get_amounts(liquidity, cur_tick, tick_low, tick_high, d0, d1):
     if liquidity == 0: return 0, 0
-    sqrtP, sqrtA, sqrtB = 1.0001**(cur_tick/2), 1.0001**(tick_low/2), 1.0001**(tick_high/2)
+    sqrtP = 1.0001**(cur_tick/2)
+    sqrtA = 1.0001**(tick_low/2)
+    sqrtB = 1.0001**(tick_high/2)
     if cur_tick < tick_low:
-        a0 = liquidity * (sqrtB - sqrtA) / (sqrtA * sqrtB); a1 = 0
+        a0 = liquidity * (sqrtB - sqrtA) / (sqrtA * sqrtB)
+        a1 = 0
     elif cur_tick < tick_high:
-        a0 = liquidity * (sqrtB - sqrtP) / (sqrtP * sqrtB); a1 = liquidity * (sqrtP - sqrtA)
+        a0 = liquidity * (sqrtB - sqrtP) / (sqrtP * sqrtB)
+        a1 = liquidity * (sqrtP - sqrtA)
     else:
-        a0 = 0; a1 = liquidity * (sqrtB - sqrtA)
+        a0 = 0
+        a1 = liquidity * (sqrtB - sqrtA)
     return a0 / (10**d0), a1 / (10**d1)
 
 # --- 3. ИНТЕРФЕЙС ---
+st.title("Architect DeFi Pro") # Вернул заголовок
 st.sidebar.header("Параметры")
+
 wallet = st.sidebar.text_input("Кошелек Arbitrum", value=st.session_state.wallet)
 start_date = st.sidebar.date_input("Дата открытия", date(2026, 1, 1))
 
@@ -108,27 +114,33 @@ if btn and wallet:
             pool_addr = factory.functions.getPool(pos[2], pos[3], pos[4]).call()
             cur_tick = w3.eth.contract(address=pool_addr, abi=ABI_POOL).functions.slot0().call()[1]
 
-            live_fees = nft_contract.functions.collect({"tokenId": tid, "recipient": target, "amount0Max": 2**128-1, "amount1Max": 2**128-1}).call({'from': target})
-            f0, f1 = live_fees[0] / (10**d0), live_fees[1] / (10**d1)
-
             is_inv = (s0 in ["USDC", "USDT", "DAI"])
             p_min_r, p_max_r, p_now_r = tick_to_price(pos[5], d0, d1), tick_to_price(pos[6], d0, d1), tick_to_price(cur_tick, d0, d1)
             p_min, p_max, p_now = (1/p_max_r, 1/p_min_r, 1/p_now_r) if is_inv else (p_min_r, p_max_r, p_now_r)
 
             a0, a1 = get_amounts(pos[7], cur_tick, pos[5], pos[6], d0, d1)
             val_usd = (a0 * p_eth + a1) if not is_inv else (a0 + a1 * p_eth)
-            fee_usd = (f0 * p_eth + f1) if not is_inv else (f0 + f1 * p_eth)
+            
+            # Комиссии
+            f_raw = nft_contract.functions.collect({"tokenId": tid, "recipient": target, "amount0Max": 2**128-1, "amount1Max": 2**128-1}).call({'from': target})
+            fee_usd = (f_raw[0]/(10**d0)*p_eth + f_raw[1]/(10**d1)) if not is_inv else (f_raw[0]/(10**d0) + f_raw[1]/(10**d1)*p_eth)
 
-            # РАСЧЕТ ВЫХОДА ИЗ ДИАПАЗОНА
+            # --- РАСЧЕТ ВЫХОДА (ИСПРАВЛЕННЫЙ) ---
             sqrtA, sqrtB = math.sqrt(p_min), math.sqrt(p_max)
-            # Сколько будет USDC при выходе вверх
-            exit_usdc = pos[7] * (sqrtB - sqrtA) / (10**d1) if is_inv else pos[7] * (sqrtB - sqrtA) / (10**d0)
-            # Средняя цена ETH при выходе вниз (математическое среднее позиции)
-            avg_buy_price = math.sqrt(p_min * p_max)
+            # В Uniswap V3: Ликвидность * (sqrtB - sqrtA) = Amount1 (если цена уходит за верх)
+            # Ликвидность * (1/sqrtA - 1/sqrtB) = Amount0 (если цена уходит за низ)
+            if is_inv: # Пара USDC/ETH
+                exit_usdc_val = (pos[7] * (sqrtB - sqrtA)) / (10**d0)
+                exit_eth_val = (pos[7] * (sqrtB - sqrtA) / (sqrtA * sqrtB)) / (10**d1)
+            else: # Пара ETH/USDC
+                exit_eth_val = (pos[7] * (sqrtB - sqrtA) / (sqrtA * sqrtB)) / (10**d0)
+                exit_usdc_val = (pos[7] * (sqrtB - sqrtA)) / (10**d1)
 
+            avg_buy_p = exit_usdc_val / exit_eth_val if exit_eth_val > 0 else 0
             roi_pct = ((val_usd + fee_usd - initial_inv) / initial_inv * 100) if initial_inv > 0 else 0
             p_pos = max(0, min(100, (cur_tick - pos[5]) / (pos[6] - pos[5]) * 100))
 
+            # РЕНДЕРИНГ КАРТОЧКИ
             st.markdown(f"""
 <div class="metric-card">
     <div style="display: flex; justify-content: space-between; align-items: center;">
@@ -149,21 +161,22 @@ if btn and wallet:
 
     <div class="exit-box">
         <div style="display: flex; justify-content: space-between;">
-            <span>📉 При выходе вниз (в ETH):</span>
-            <b>Средняя цена покупки ~{avg_buy_price:,.1f}</b>
+            <span>📉 Выход вниз (100% ETH):</span>
+            <b>~{exit_eth_val:.3f} ETH (ср. цена {avg_buy_p:,.1f})</b>
         </div>
         <div style="display: flex; justify-content: space-between; margin-top: 5px;">
-            <span>📈 При выходе вверх (в USDC):</span>
-            <b>Итого будет ~{exit_usdc:,.1f} USDC</b>
+            <span>📈 Выход вверх (100% USDC):</span>
+            <b>~{exit_usdc_val:,.1f} USDC</b>
         </div>
     </div>
 
     <div class="range-bar-bg"><div class="range-fill" style="width: 100%;"></div><div class="price-pointer" style="left: {p_pos}%;"></div></div>
-    <div style="display: flex; justify-content: space-between; font-size: 0.8em;">
+    <div style="display: flex; justify-content: space-between; font-size: 0.85em;">
         <span>Мин: {p_min:,.1f}</span>
         <span style="color: #fbbf24; font-weight: bold;">Цена: {p_now:,.1f}</span>
         <span>Макс: {p_max:,.1f}</span>
     </div>
 </div>""", unsafe_allow_html=True)
+            
     except Exception as e:
-        st.error(f"Ошибка: {e}")
+        st.error(f"Произошла ошибка: {e}")
