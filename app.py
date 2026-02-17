@@ -7,7 +7,7 @@ import math
 # --- 1. НАСТРОЙКИ СТРАНИЦЫ ---
 st.set_page_config(page_title="Architect DeFi Pro", layout="wide")
 
-# Память сессии
+# Память сессии (чтобы данные не пропадали)
 if "wallet" not in st.session_state: st.session_state.wallet = ""
 if "inv_usdc" not in st.session_state: st.session_state.inv_usdc = 175.0
 if "inv_eth" not in st.session_state: st.session_state.inv_eth = 0.0
@@ -92,7 +92,7 @@ if st.sidebar.button("ОБНОВИТЬ ДАННЫЕ", type="primary") and wallet
             p_min = 1/get_tick_p(pos[6], d0, d1) if is_inv else get_tick_p(pos[5], d0, d1)
             p_max = 1/get_tick_p(pos[5], d0, d1) if is_inv else get_tick_p(pos[6], d0, d1)
             
-            # Текущая стоимость и комиссии
+            # Комиссии
             f_raw = nft.functions.collect({"tokenId": tid, "recipient": target, "amount0Max": 2**128-1, "amount1Max": 2**128-1}).call({'from': target})
             fee_usd = (f_raw[0]/(10**d0)*p_eth + f_raw[1]/(10**d1)) if not is_inv else (f_raw[0]/(10**d0) + f_raw[1]/(10**d1)*p_eth)
             
@@ -107,14 +107,13 @@ if st.sidebar.button("ОБНОВИТЬ ДАННЫЕ", type="primary") and wallet
                 max_usdc = (L * (sqrtB - sqrtA)) / (10**d1)
 
             avg_p = max_usdc / max_eth if max_eth > 0 else 0
-            roi = (( (initial_usd + fee_usd) - initial_usd ) / initial_usd * 100) if initial_usd > 0 else 0
+            roi = (fee_usd / initial_usd * 100) if initial_usd > 0 else 0
             p_pos = max(0, min(100, (p_eth - p_min) / (p_max - p_min) * 100))
 
-            # Формируем HTML одной строкой без лишних пробелов для стабильности
             card_html = f"""<div class="metric-card">
 <div style="display:flex;justify-content:space-between;align-items:center;">
 <h2 style="margin:0;">{s0}/{s1} #{tid}</h2>
-<span style="font-size:1.5em;font-weight:bold;color:#4ade80;">{roi:+.2f}%</span>
+<span style="font-size:1.5em;font-weight:bold;color:#4ade80;">{roi:+.2f}% ROI (fees)</span>
 </div>
 <div style="display:grid;grid-template-columns:1fr 1fr;gap:15px;margin-top:15px;">
 <div class="stat-box">
@@ -140,7 +139,7 @@ if st.sidebar.button("ОБНОВИТЬ ДАННЫЕ", type="primary") and wallet
 <div style="display:flex;justify-content:space-between;font-size:0.85em;">
 <span>MIN: {p_min:,.1f}</span>
 <span style="color:#fbbf24;font-weight:bold;">Цена ETH: {p_eth:,.1f}</span>
-<span>MAX: {p_high:,.1f}</span>
+<span>MAX: {p_max:,.1f}</span>
 </div>
 </div>"""
             st.markdown(card_html, unsafe_allow_html=True)
