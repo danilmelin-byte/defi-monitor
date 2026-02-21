@@ -13,6 +13,8 @@ if "inv_usdc" not in st.session_state: st.session_state.inv_usdc = 175.0
 if "inv_eth" not in st.session_state: st.session_state.inv_eth = 0.0
 if "start_date" not in st.session_state: st.session_state.start_date = date(2026, 1, 1)
 if "p_eth_entry" not in st.session_state: st.session_state.p_eth_entry = None
+if "goal_name" not in st.session_state: st.session_state.goal_name = ""
+if "goal_cost" not in st.session_state: st.session_state.goal_cost = 0.0
 
 st.markdown("""
 <style>
@@ -55,6 +57,19 @@ st.markdown("""
         position: absolute; top: -6px; width: 6px; height: 24px;
         background: #fbbf24; border-radius: 3px;
         box-shadow: 0 0 10px #fbbf24;
+    }
+    .goal-box {
+        background: rgba(139, 92, 246, 0.15);
+        border: 1px solid #8b5cf6;
+        padding: 20px; border-radius: 16px;
+        margin-top: 15px;
+        display: flex; align-items: center; gap: 24px;
+    }
+    .goal-ring-wrap {
+        flex-shrink: 0;
+    }
+    .goal-info {
+        flex: 1;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -103,11 +118,17 @@ start_date = st.sidebar.date_input("Дата открытия", value=st.session
 u_inv = st.sidebar.number_input("Вклад USDC", min_value=0.0, value=float(st.session_state.inv_usdc))
 e_inv = st.sidebar.number_input("Вклад ETH", min_value=0.0, value=float(st.session_state.inv_eth))
 
+st.sidebar.markdown("---")
+goal_name = st.sidebar.text_input("Цель накоплений", value=st.session_state.goal_name, placeholder="Например: Ноутбук, Отпуск...")
+goal_cost = st.sidebar.number_input("Стоимость цели ($)", min_value=0.0, value=float(st.session_state.goal_cost))
+
 if st.sidebar.button("ОБНОВИТЬ ДАННЫЕ", type="primary") and wallet:
     st.session_state.wallet = wallet
     st.session_state.inv_usdc = u_inv
     st.session_state.inv_eth = e_inv
     st.session_state.start_date = start_date
+    st.session_state.goal_name = goal_name
+    st.session_state.goal_cost = goal_cost
 
     try:
         r = requests.get(
@@ -190,6 +211,60 @@ if st.sidebar.button("ОБНОВИТЬ ДАННЫЕ", type="primary") and wallet
             apr = (fee_usd / val_usd) * (365 / days) * 100 if val_usd > 0 else 0
             vs_hodl = total_current - hodl_usd
 
+            # Цель накоплений
+            g_name = st.session_state.goal_name
+            g_cost = st.session_state.goal_cost
+            goal_html = ""
+            if g_name and g_cost > 0:
+                g_pct = min(fee_usd / g_cost * 100, 100)
+                # SVG кольцо: r=45, circumference ≈ 282.74
+                radius = 45
+                circ = 2 * math.pi * radius
+                dash_fill = circ * g_pct / 100
+                dash_gap = circ - dash_fill
+                # Цвет прогресса: красный → жёлтый → зелёный
+                if g_pct < 50:
+                    t = g_pct / 50
+                    r_c = 255
+                    g_c = int(t * 220)
+                    ring_color = f"rgb({r_c},{g_c},40)"
+                elif g_pct < 100:
+                    t = (g_pct - 50) / 50
+                    r_c = int(255 * (1 - t))
+                    ring_color = f"rgb({r_c},220,40)"
+                else:
+                    ring_color = "#4ade80"
+                days_left = ((g_cost - fee_usd) / daily) if daily > 0 else 0
+                goal_html = f"""
+<div class="goal-box">
+  <div class="goal-ring-wrap">
+    <svg width="120" height="120" viewBox="0 0 120 120">
+      <circle cx="60" cy="60" r="{radius}"
+        fill="none" stroke="rgba(255,255,255,0.1)" stroke-width="10"/>
+      <circle cx="60" cy="60" r="{radius}"
+        fill="none" stroke="{ring_color}" stroke-width="10"
+        stroke-linecap="round"
+        stroke-dasharray="{dash_fill:.2f} {dash_gap:.2f}"
+        transform="rotate(-90 60 60)"/>
+      <text x="60" y="55" text-anchor="middle"
+        font-size="16" font-weight="bold" fill="#fff">{g_pct:.1f}%</text>
+      <text x="60" y="72" text-anchor="middle"
+        font-size="9" fill="rgba(255,255,255,0.7)">выполнено</text>
+    </svg>
+  </div>
+  <div class="goal-info">
+    <div style="font-size:0.75em;opacity:0.7;margin-bottom:4px;">Цель накоплений</div>
+    <div style="font-size:1.15em;font-weight:bold;color:#c4b5fd;margin-bottom:8px;">🎯 {g_name}</div>
+    <div style="font-size:0.85em;margin-bottom:4px;">
+      Накоплено: <b style="color:#4ade80;">${fee_usd:,.2f}</b>
+      <span style="opacity:0.6;"> / ${g_cost:,.2f}</span>
+    </div>
+    <div style="font-size:0.8em;opacity:0.75;">
+      {'✅ Цель достигнута!' if g_pct >= 100 else f'Осталось: <b>${g_cost - fee_usd:,.2f}</b> (~{int(days_left)} дн. при текущем APR)'}
+    </div>
+  </div>
+</div>"""
+
             # Позиция на полосе диапазона (через тики — точный расчёт)
             p_pos = max(0, min(100, (cur_tick - pos[5]) / (pos[6] - pos[5]) * 100))
             in_range = pos[5] <= cur_tick <= pos[6]
@@ -264,6 +339,7 @@ if st.sidebar.button("ОБНОВИТЬ ДАННЫЕ", type="primary") and wallet
 <span style="color:#fbbf24;font-weight:bold;">Цена ETH: {p_now:,.1f}</span>
 <span>Макс: <b>{p_max:,.1f}</b></span>
 </div>
+{goal_html}
 </div>
 """
             st.markdown(html_content, unsafe_allow_html=True)
